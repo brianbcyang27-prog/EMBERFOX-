@@ -103,7 +103,7 @@ localparam S_MENU_DIFF  = 0;
 localparam S_PLAY       = 1;
 localparam S_OVER       = 2;
 localparam S_MENU_SKILL = 3;
-localparam S_HOWTO      = 4;     // how-to-play screen (JUMP to start the countdown)
+localparam S_HOWTO      = 4;     // full-screen how-to page (JUMP to begin the menu; shown once at power-on)
 localparam S_COUNT      = 5;     // pre-game countdown 5..1, then S_PLAY
 
 localparam DIFF_EASY   = 0;
@@ -755,8 +755,9 @@ always @(posedge clk) begin
 		score <= 0;
 		high_score <= 0;
 		skill_charge <= 0;
-		// Reset lands on the start menu, not straight into a run.
-		state <= S_MENU_DIFF;
+		// Reset lands on the full-screen how-to page. It only appears once:
+		// play-again from the results screen restarts from the menu.
+		state <= S_HOWTO;
 		diff_sel <= DIFF_NORMAL;
 		skill_sel <= SKILL_EMBER;
 		frame_cnt <= 0;
@@ -807,10 +808,13 @@ always @(posedge clk) begin
 			btn_jump_q <= 1'b1;
 		end else if (frame_tick && in_menu) begin
 			// ---------------------------------------------------------------
-			// Start menu: LEFT / RIGHT pick, JUMP confirms.
+			// Start sequence: full-screen how-to page, then the menus.
+			// LEFT / RIGHT pick, JUMP confirms.
 			//
-			// Page 1 chooses the difficulty, page 2 chooses the skill, then a
-			// how-to screen (JUMP again = "I'm ready"), then the countdown.
+			// Power-on shows the how-to page first (JUMP = "got it", then
+			// page 1 difficulty, page 2 skill, then the countdown). Play-again
+			// from the results screen goes straight to the difficulty menu, so
+			// the instructions never repeat.
 			// One step per press (menu_move_rise), so holding the button does
 			// not race through the options.
 			// ---------------------------------------------------------------
@@ -822,12 +826,13 @@ always @(posedge clk) begin
 					skill_sel <= menu_left ? (skill_sel == 2'd0 ? 2'd2 : skill_sel - 1'b1)
 										   : (skill_sel == 2'd2 ? 2'd0 : skill_sel + 1'b1);
 			end else if (btn_jump_rise) begin
-				if (state == S_MENU_DIFF) begin
+				if (state == S_HOWTO) begin
+					// ---- how-to page -> the start menu ----
+					state <= S_MENU_DIFF;
+				end else if (state == S_MENU_DIFF) begin
 					state <= S_MENU_SKILL;
-				end else if (state == S_MENU_SKILL) begin
-					state <= S_HOWTO;
 				end else begin
-					// ---- how-to screen -> start the countdown ----
+					// ---- skill menu -> start the countdown ----
 					count_val <= 5;
 					count_frames <= 0;
 					state <= S_COUNT;

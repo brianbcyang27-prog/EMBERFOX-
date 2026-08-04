@@ -41,8 +41,15 @@ localparam [9:0] BORDER_T = 10'd4;
 localparam [9:0] TITLE_Y       = 10'd140;
 localparam [9:0] TITLE_STRIDE  = 10'd28;   // (6+1) * 4
 localparam [9:0] TITLE_GW      = 10'd24;   // 6 * 4
+// Each base X centres its word on the 320 pixel panel centre. Word widths:
+// 4 chars -> 108px, 5 -> 136, 6 -> 164, 7 -> 192, 9 -> 248, 11 -> 304.
 localparam [9:0] TITLE_X_TIMEUP = 10'd222; // "TIME UP"        (7 chars)
-localparam [9:0] TITLE_X_MENU   = 10'd222; // difficulty/skill names (7 chars)
+localparam [9:0] TITLE_X_EASY   = 10'd266; // "EASY"           (4 chars)
+localparam [9:0] TITLE_X_NORMAL = 10'd238; // "NORMAL"         (6 chars)
+localparam [9:0] TITLE_X_HARD   = 10'd266; // "HARD"           (4 chars)
+localparam [9:0] TITLE_X_EMBER  = 10'd252; // "EMBER"          (5 chars)
+localparam [9:0] TITLE_X_TIME   = 10'd266; // "TIME"           (4 chars)
+localparam [9:0] TITLE_X_LURE   = 10'd266; // "LURE"           (4 chars)
 localparam [9:0] TITLE_X_HOWTO  = 10'd166; // "HOW TO PLAY"    (11 chars)
 localparam [9:0] TITLE_X_READY  = 10'd194; // "GET READY"      (9 chars)
 
@@ -53,8 +60,24 @@ localparam [9:0] BODY_STRIDE  = 10'd14;    // (6+1) * 2
 localparam [9:0] BODY_GW      = 10'd12;    // 6 * 2
 localparam [9:0] BODY_NCHARS  = 6'd24;     // longest line
 localparam [9:0] BODY_Y_GAP   = 10'd28;
-localparam [9:0] MENU_BODY_Y0 = 10'd236;   // below the option dots, above BEST
-localparam [9:0] HOWTO_BODY_Y0 = 10'd200;
+localparam [9:0] MENU_BODY_Y0 = 10'd236;   // below the option dots
+
+// Full-screen how-to page: the title sits high and five centred body lines
+// spread down the screen, over a full black page (the panel is disabled).
+localparam [9:0] HOWTO_TITLE_Y    = 10'd48;
+localparam [9:0] HOWTO_BODY_Y0_FS = 10'd144;
+localparam [9:0] HOWTO_BODY_STRIDE = 10'd56;
+localparam [9:0] HOWTO_X0   = 10'd160;  // "CATCH EMBERS FOR POINTS"  (23 chars)
+localparam [9:0] HOWTO_X1   = 10'd195;  // "JUMP THE OBSTACLES"       (18)
+localparam [9:0] HOWTO_X2   = 10'd181;  // "LEFT OR RIGHT TO MOVE"    (20)
+localparam [9:0] HOWTO_X3   = 10'd181;  // "PRESS JUMP WHEN READY"    (20)
+localparam [9:0] HOWTO_X_HINT = 10'd230; // "JUMP TO START"           (13)
+
+// Menu button legend, scale 2, centred: tells the player which button to press.
+localparam [9:0] HINT1_Y = 10'd292;        // "SELECT LEFT OR RIGHT"  (20 chars)
+localparam [9:0] HINT1_X = 10'd181;
+localparam [9:0] HINT2_Y = 10'd320;        // "JUMP TO CONFIRM"       (15 chars)
+localparam [9:0] HINT2_X = 10'd216;
 
 // Countdown digit, scale 8 (48x96), centred on the panel.
 localparam [9:0] COUNT_X = 10'd296;
@@ -291,6 +314,13 @@ function [5:0] body_char;
 				19: body_char = CH_V; 20: body_char = CH_E;
 				default: body_char = CH_SP;
 			endcase
+			3'd4: case (idx)         // "JUMP TO START"
+				0: body_char = CH_J;  1: body_char = CH_U;  2: body_char = CH_M;
+				3: body_char = CH_P;  5: body_char = CH_T;  6: body_char = CH_O;
+				8: body_char = CH_S;  9: body_char = CH_T; 10: body_char = CH_A;
+				11: body_char = CH_R; 12: body_char = CH_T;
+				default: body_char = CH_SP;
+			endcase
 			default: case (idx)      // "PRESS JUMP WHEN READY"
 				0: body_char = CH_P;  1: body_char = CH_R;  2: body_char = CH_E;
 				3: body_char = CH_S;  4: body_char = CH_S;  6: body_char = CH_J;
@@ -299,6 +329,35 @@ function [5:0] body_char;
 				14: body_char = CH_N; 16: body_char = CH_R; 17: body_char = CH_E;
 				18: body_char = CH_A; 19: body_char = CH_D; 20: body_char = CH_Y;
 				default: body_char = CH_SP;
+			endcase
+		endcase
+	end
+endfunction
+
+// The menu button legend: two centred lines telling the player which button
+// does what. Line 0 = how to pick, line 1 = how to confirm.
+function [5:0] hint_glyph;
+	input [2:0] line;
+	input [5:0] idx;
+	begin
+		hint_glyph = CH_SP;
+		case (line)
+			3'd0: case (idx)         // "SELECT LEFT OR RIGHT"
+				0: hint_glyph = CH_S;  1: hint_glyph = CH_E;  2: hint_glyph = CH_L;
+				3: hint_glyph = CH_E;  4: hint_glyph = CH_C;  5: hint_glyph = CH_T;
+				7: hint_glyph = CH_L;  8: hint_glyph = CH_E;  9: hint_glyph = CH_F;
+				10: hint_glyph = CH_T; 12: hint_glyph = CH_O; 13: hint_glyph = CH_R;
+				15: hint_glyph = CH_R; 16: hint_glyph = CH_I; 17: hint_glyph = CH_G;
+				18: hint_glyph = CH_H; 19: hint_glyph = CH_T;
+				default: hint_glyph = CH_SP;
+			endcase
+			default: case (idx)      // "JUMP TO CONFIRM"
+				0: hint_glyph = CH_J;  1: hint_glyph = CH_U;  2: hint_glyph = CH_M;
+				3: hint_glyph = CH_P;  5: hint_glyph = CH_T;  6: hint_glyph = CH_O;
+				8: hint_glyph = CH_C;  9: hint_glyph = CH_O; 10: hint_glyph = CH_N;
+				11: hint_glyph = CH_F; 12: hint_glyph = CH_I; 13: hint_glyph = CH_R;
+				14: hint_glyph = CH_M;
+				default: hint_glyph = CH_SP;
 			endcase
 		endcase
 	end
@@ -367,8 +426,10 @@ reg [12:0] gc;
 reg [4:0]  ci;
 reg [9:0]  title_base;
 reg [5:0]  title_n;
+reg [9:0]  title_y;
 reg [2:0]  body_line;
 reg [9:0]  body_y0;
+reg [9:0]  body_x;
 reg        body_vis;   // pixel is inside one of the body text lines
 
 always @(*) begin
@@ -379,19 +440,28 @@ always @(*) begin
 	font_y    = 4'd0;
 	gc        = 13'd0;
 	ci        = 5'd0;
-	title_base = TITLE_X_MENU;
-	title_n    = 6'd7;
+	title_base = TITLE_X_EASY;
+	title_n    = 6'd4;
+	title_y    = TITLE_Y;
 	body_line  = 3'd0;
 	body_y0    = MENU_BODY_Y0;
 
-	// Title line, scale 4. The base X and char count follow the heading.
-	if (pixel_y >= TITLE_Y && pixel_y < TITLE_Y + 48) begin
-		case (mode)
-			3'd1:       begin title_base = TITLE_X_TIMEUP; title_n = 6'd7; end
-			3'd4:       begin title_base = TITLE_X_HOWTO; title_n = 6'd11; end
-			3'd5:       begin title_base = TITLE_X_READY; title_n = 6'd9; end
-			default:    begin title_base = TITLE_X_MENU;  title_n = 6'd7; end
+	// Title line, scale 4. The base X, char count, and Y follow the heading.
+	case (mode)
+		3'd1: begin title_base = TITLE_X_TIMEUP; title_n = 6'd7; end
+		3'd4: begin title_base = TITLE_X_HOWTO;  title_n = 6'd11; title_y = HOWTO_TITLE_Y; end
+		3'd5: begin title_base = TITLE_X_READY;  title_n = 6'd9; end
+		3'd2: case (title_id)
+			TITLE_NORMAL: begin title_base = TITLE_X_NORMAL; title_n = 6'd6; end
+			default:      begin title_base = TITLE_X_EASY;   title_n = 6'd4; end
 		endcase
+		default: case (title_id)
+			TITLE_EMBER: begin title_base = TITLE_X_EMBER; title_n = 6'd5; end
+			default:     begin title_base = TITLE_X_TIME;  title_n = 6'd4; end
+		endcase
+	endcase
+
+	if (pixel_y >= title_y && pixel_y < title_y + 48) begin
 		gc = glyph_col(pixel_x, title_base, TITLE_STRIDE, TITLE_GW, title_n);
 		if (gc[12]) begin
 			ci = gc[11:7];
@@ -400,23 +470,33 @@ always @(*) begin
 				glyph_hit = 1'b1;
 				is_title  = 1'b1;
 				font_x    = gc[6:0] >> 2;
-				font_y    = (pixel_y - TITLE_Y) >> 2;
+				font_y    = (pixel_y - title_y) >> 2;
 			end
 		end
 	end
 
 	// Body text, scale 2. Which of the lines (and its top Y) is picked by the
 	// pixel row; all lines share one glyph_col field. body_vis stays 0 for the
-	// gaps between lines so nothing is drawn there.
+	// gaps between lines so nothing is drawn there. The how-to page is full
+	// screen and centres each line; the menu stays left-aligned under the dots.
 	body_line = 3'd0;
 	body_y0   = MENU_BODY_Y0;
+	body_x    = BODY_X;
 	body_vis  = 1'b0;
 	if (show_howto) begin
-		if      (pixel_y >= HOWTO_BODY_Y0                        && pixel_y < HOWTO_BODY_Y0 + 24) begin body_line = 3'd0; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0 + BODY_Y_GAP           && pixel_y < HOWTO_BODY_Y0 + BODY_Y_GAP + 24) begin body_line = 3'd1; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0 + 2*BODY_Y_GAP         && pixel_y < HOWTO_BODY_Y0 + 2*BODY_Y_GAP + 24) begin body_line = 3'd2; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0 + 3*BODY_Y_GAP         && pixel_y < HOWTO_BODY_Y0 + 3*BODY_Y_GAP + 24) begin body_line = 3'd3; body_vis = 1'b1; end
-		body_y0 = HOWTO_BODY_Y0 + {1'b0, body_line} * BODY_Y_GAP;
+		if      (pixel_y >= HOWTO_BODY_Y0_FS                                             && pixel_y < HOWTO_BODY_Y0_FS + 24) begin body_line = 3'd0; body_vis = 1'b1; end
+		else if (pixel_y >= HOWTO_BODY_Y0_FS +     HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS +     HOWTO_BODY_STRIDE + 24) begin body_line = 3'd1; body_vis = 1'b1; end
+		else if (pixel_y >= HOWTO_BODY_Y0_FS + 2 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 2 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd2; body_vis = 1'b1; end
+		else if (pixel_y >= HOWTO_BODY_Y0_FS + 3 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 3 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd3; body_vis = 1'b1; end
+		else if (pixel_y >= HOWTO_BODY_Y0_FS + 4 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 4 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd4; body_vis = 1'b1; end
+		body_y0 = HOWTO_BODY_Y0_FS + {1'b0, body_line} * HOWTO_BODY_STRIDE;
+		case (body_line)
+			3'd0:   body_x = HOWTO_X0;
+			3'd1:   body_x = HOWTO_X1;
+			3'd2:   body_x = HOWTO_X2;
+			3'd3:   body_x = HOWTO_X3;
+			default: body_x = HOWTO_X_HINT;
+		endcase
 	end else if (show_menu) begin
 		if      (pixel_y >= MENU_BODY_Y0                        && pixel_y < MENU_BODY_Y0 + 24) begin body_line = 3'd0; body_vis = 1'b1; end
 		else if (pixel_y >= MENU_BODY_Y0 + BODY_Y_GAP           && pixel_y < MENU_BODY_Y0 + BODY_Y_GAP + 24) begin body_line = 3'd1; body_vis = 1'b1; end
@@ -424,7 +504,7 @@ always @(*) begin
 	end
 
 	if (!glyph_hit && body_vis) begin
-		gc = glyph_col(pixel_x, BODY_X, BODY_STRIDE, BODY_GW, BODY_NCHARS);
+		gc = glyph_col(pixel_x, body_x, BODY_STRIDE, BODY_GW, BODY_NCHARS);
 		if (gc[12]) begin
 			ci = gc[11:7];
 			glyph = glyph_of(body_char(body_line, ci));
@@ -462,9 +542,9 @@ always @(*) begin
 		end
 	end
 
-	// Best label "BEST", scale 2. Result screen and the menus (under the
-	// description); hidden on how-to/countdown where its row belongs to text.
-	if (!glyph_hit && (show_result || show_menu) &&
+	// Best label "BEST", scale 2. Results screen only - the menu bottom rows
+	// belong to the button legend instead.
+	if (!glyph_hit && show_result &&
 		pixel_y >= BEST_LABEL_Y && pixel_y < BEST_LABEL_Y + 24) begin
 		gc = glyph_col(pixel_x, BEST_LABEL_X, LABEL_STRIDE, LABEL_GW, 6'd4);
 		if (gc[12]) begin
@@ -496,7 +576,7 @@ always @(*) begin
 	end
 
 	// Best value (3 BCD digits), scale 4
-	if (!glyph_hit && (show_result || show_menu) &&
+	if (!glyph_hit && show_result &&
 		pixel_y >= BEST_VAL_Y && pixel_y < BEST_VAL_Y + 48) begin
 		gc = glyph_col(pixel_x, VALUE_X, VAL_STRIDE, VAL_GW, 6'd3);
 		if (gc[12]) begin
@@ -509,6 +589,34 @@ always @(*) begin
 			glyph_hit = 1'b1;
 			font_x    = gc[6:0] >> 2;
 			font_y    = (pixel_y - BEST_VAL_Y) >> 2;
+		end
+	end
+
+	// Menu button legend, scale 2. Two centred lines in the bottom rows that
+	// the BEST row used to occupy on the results screen.
+	if (!glyph_hit && show_menu) begin
+		if (pixel_y >= HINT1_Y && pixel_y < HINT1_Y + 24) begin
+			gc = glyph_col(pixel_x, HINT1_X, BODY_STRIDE, BODY_GW, 6'd20);
+			if (gc[12]) begin
+				ci = gc[11:7];
+				glyph = hint_glyph(3'd0, ci);
+				if (glyph != GLYPH_SPACE) begin
+					glyph_hit = 1'b1;
+					font_x    = gc[6:0] >> 1;
+					font_y    = (pixel_y - HINT1_Y) >> 1;
+				end
+			end
+		end else if (pixel_y >= HINT2_Y && pixel_y < HINT2_Y + 24) begin
+			gc = glyph_col(pixel_x, HINT2_X, BODY_STRIDE, BODY_GW, 6'd15);
+			if (gc[12]) begin
+				ci = gc[11:7];
+				glyph = hint_glyph(3'd1, ci);
+				if (glyph != GLYPH_SPACE) begin
+					glyph_hit = 1'b1;
+					font_x    = gc[6:0] >> 1;
+					font_y    = (pixel_y - HINT2_Y) >> 1;
+				end
+			end
 		end
 	end
 end
@@ -533,6 +641,7 @@ reg glyph_hit_d;
 reg is_title_d;
 reg [2:0] font_x_d;
 reg show_d;
+reg howto_d;
 reg in_panel_d;
 reg in_border_d;
 reg dot_on_d;
@@ -549,12 +658,14 @@ wire glyph_on = glyph_hit_d & font_row_bits[3'd5 - font_x_d];
 wire [23:0] dimmed = DIM_BACKGROUND ? dim_bgr888(base_d) : base_d;
 wire [23:0] bg_sel = show_d ? dimmed : base_d;
 
+// The how-to page is full screen: no panel box, just a black page with text.
 assign out_axis_tdata =
-	(show_d && glyph_on)     ? (is_title_d ? COLOR_TITLE : COLOR_TEXT) :
-	(show_d && dot_on_d)     ? (dot_sel_d ? COLOR_DOT_ON : COLOR_DOT_OFF) :
-	(show_d && in_border_d)  ? COLOR_BORDER :
-	(show_d && in_panel_d)   ? COLOR_PANEL :
-							   bg_sel;
+	(show_d && glyph_on)                 ? (is_title_d ? COLOR_TITLE : COLOR_TEXT) :
+	(show_d && dot_on_d)                 ? (dot_sel_d ? COLOR_DOT_ON : COLOR_DOT_OFF) :
+	(show_d && in_border_d && !howto_d)  ? COLOR_BORDER :
+	(show_d && in_panel_d  && !howto_d)  ? COLOR_PANEL :
+	howto_d                              ? COLOR_PANEL :
+										   bg_sel;
 
 always @(posedge clk) begin
 	if (!resetn) begin
@@ -562,6 +673,7 @@ always @(posedge clk) begin
 		is_title_d <= 0;
 		font_x_d <= 0;
 		show_d <= 0;
+		howto_d <= 0;
 		in_panel_d <= 0;
 		in_border_d <= 0;
 		dot_on_d <= 0;
@@ -576,6 +688,7 @@ always @(posedge clk) begin
 			is_title_d <= is_title;
 			font_x_d <= font_x;
 			show_d <= show;
+			howto_d <= show_howto;
 			dot_on_d <= dot_on;
 			dot_sel_d <= dot_sel;
 			in_panel_d <= in_panel;

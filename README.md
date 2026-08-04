@@ -176,26 +176,25 @@ raw active-low button
 Current game states in `game_ctrl`:
 
 ```text
+4: how-to page (full screen, shown once at power-on)
 0: menu -- difficulty
 3: menu -- skill
-4: how-to screen
 5: countdown
 1: playing
 2: game over
 ```
 
-Reset starts in the difficulty menu. JUMP moves through the menus
-(difficulty → skill → how-to), then starts a 5 → 1 countdown before the run.
-The state register stays inside `game_ctrl`; render layers receive `game_over`
-and the `menu_mode` / `count_val` signals for the menu screens.
+Reset starts on the full-screen how-to page. JUMP proceeds: how-to →
+difficulty → skill, then a 5 → 1 countdown before the run. Play-again from the
+results screen jumps back to the difficulty menu, so the instructions never
+repeat. The state register stays inside `game_ctrl`; render layers receive
+`game_over` and the `menu_mode` / `count_val` signals for the menu screens.
 
-Restarting:
+Restarting (from the results screen):
 
-- player returns to the ground, velocity cleared
-- timer resets
-- score resets
-- active objects are cleared
-- state returns to playing
+- JUMP returns to the difficulty menu, so difficulty/skill can be changed
+- the run itself resets when the countdown drops into play: player returns to
+  the ground, velocity cleared, timer/score resets, active objects cleared
 - high score is kept
 
 The board has three buttons, so jump (pin 17) doubles as restart once the run
@@ -435,9 +434,12 @@ SCORE 123
 BEST  456
 
 (menu)   the title line shows the selected difficulty / skill word, with
-         three option boxes underneath and the chosen one lit
+         three option boxes underneath and the chosen one lit, plus a
+         two-line button legend: SELECT LEFT OR RIGHT / JUMP TO CONFIRM
 
-(how-to) LEFT OR RIGHT TO MOVE, PRESS JUMP WHEN READY, etc.
+(how-to) FULL SCREEN (no panel box): HOW TO PLAY title plus five centred
+         lines - CATCH EMBERS FOR POINTS, JUMP THE OBSTACLES,
+         LEFT OR RIGHT TO MOVE, PRESS JUMP WHEN READY, JUMP TO START
 
 (countdown)  GET READY + a big 5 -> 1 digit, one per second
 ```

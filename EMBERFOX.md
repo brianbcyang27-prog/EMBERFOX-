@@ -50,7 +50,7 @@ menu**, **three skills to choose between**, and a gentler, longer default run.
 | Background | still image | **same, unchanged** |
 | Player | moves left / right | left / right **and jumps** |
 | The floor | flat and empty | **spawns ridges** in two heights |
-| On reset | straight into a run | **start menu**: difficulty, skill, how-to, countdown |
+| On reset | straight into a run | **full-screen how-to page**, then menu: difficulty, skill, countdown (shown once) |
 | Difficulty | fixed | **EASY / NORMAL / HARD** |
 | Skill | wired but did nothing | **EMBER / TIME / LURE** |
 
@@ -185,21 +185,33 @@ and "clear a tall one".
 State `0` was unused in the coin game. It is now the menu:
 
 ```text
-S_MENU_DIFF (0) --jump--> S_MENU_SKILL (3) --jump--> S_HOWTO (4) --jump--> S_COUNT (5) --5s--> S_PLAY (1)
-        ^                                                                                            |
-        +--------------------------- jump ---------------- S_OVER (2) <-----------------------------+
+S_HOWTO (4) --jump--> S_MENU_DIFF (0) --jump--> S_MENU_SKILL (3) --jump--> S_COUNT (5) --5s--> S_PLAY (1)
+        ^                                                                                               |
+        |                                            (timer runs out)                                   |
+        +--------------------------------------- S_OVER (2) <-------------------------------------------+
+                                                     |
+                                                     +---- jump (play again) ----> S_MENU_DIFF
 ```
+
+Power-on lands on the **full-screen how-to page**; it appears exactly once.
+Play-again from the results screen jumps straight back to the difficulty menu
+(no instructions again).
 
 The menu costs almost no hardware because it **reuses the results panel**. The
 big title line already existed for `TIME UP`; it now renders whichever word is
 selected, chosen by a `title_id` from `game_ctrl`. Under it are three small
-boxes with the chosen one lit — three fixed rectangles and a compare.
+boxes with the chosen one lit — three fixed rectangles and a compare. The
+bottom rows carry a two-line button legend (**SELECT LEFT OR RIGHT** /
+**JUMP TO CONFIRM**) so a first-time player knows which button does what — the
+same rows show **BEST** on the results screen instead.
 
-Two of the states are new screens, both drawn by the same panel:
+Two of the states are new screens:
 
-- **`S_HOWTO`** shows four lines of how-to text (catch embers, jump ridges,
-  move, and **PRESS JUMP WHEN READY**). Jumping here says "I'm ready" — the
-  press-to-start.
+- **`S_HOWTO`** is a **full-screen page** (black, not a panel box) with the
+  title **HOW TO PLAY** and five centred lines — catch embers, jump ridges,
+  move, **PRESS JUMP WHEN READY**, and **JUMP TO START**. JUMP moves on to the
+  difficulty menu. Rendering it full screen is nearly free: it is the same text
+  renderer with a mode gate that skips the panel box.
 - **`S_COUNT`** shows **GET READY** and a big 5 → 1 digit, one per second, then
   drops straight into the run. The countdown shares the body/digit renderer, so
   it costs a state and a counter, not a new layer.
