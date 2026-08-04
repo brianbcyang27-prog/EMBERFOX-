@@ -3,9 +3,10 @@ param(
     [string]$OutputDir = "src\assets",
     # basenames stored as RGB323 (8-bit) instead of RGB565 (16-bit)
     [string[]]$Sprites8bit = @("player_right_32", "player_skill_32"),
-    # Object sprites, in gameplay type order 0..6, packed (RGB323) into one atlas
+    # Object sprites, in gameplay type order 0..7, packed (RGB323) into one atlas
     # ROM instead of one .mem each. Written to $ObjAtlasFile; not emitted singly.
-    [string[]]$ObjAtlas = @("obj_plus1_16", "obj_plus3_16", "obj_plus5_16", "obj_minus3_16", "obj_minus5_16", "obj_time_16", "obj_charge_16"),
+    # Slots 0-6 are the falling objects, slot 7 is the ground obstacle.
+    [string[]]$ObjAtlas = @("obj_plus1_16", "obj_plus3_16", "obj_plus5_16", "obj_minus3_16", "obj_minus5_16", "obj_time_16", "obj_charge_16", "obj_rock_16"),
     [string]$ObjAtlasFile = "obj_atlas.mem",
     # Target sprite box size (N x N) is taken from the trailing "_<N>" in the
     # base name (e.g. obj_plus1_16 -> 16, player_right_32 -> 32); any-size source
@@ -205,7 +206,17 @@ if ($ObjAtlas.Count -gt 0) {
     try {
         foreach ($base in $ObjAtlas) {
             $png = $singles | Where-Object { $_.BaseName -eq $base } | Select-Object -First 1
-            if (-not $png) { throw "Atlas member PNG not found in ${InputPath}: $base.png" }
+            if (-not $png) {
+                # A missing member must not break the whole conversion, or one
+                # undrawn sprite would take every other asset down with it.
+                # Emit a transparent slot and warn: that sprite is simply
+                # invisible in game until the PNG is added.
+                Write-Warning "Atlas member PNG not found in ${InputPath}: $base.png -- writing a transparent slot"
+                $n = Get-TargetSize $base
+                if ($n -le 0) { $n = 16 }
+                for ($i = 0; $i -lt ($n * $n); $i++) { $writer.WriteLine("00") }
+                continue
+            }
             $bmp = Load-Sprite $png.FullName $base
             try { Write-Pixels $bmp $writer $true } finally { $bmp.Dispose() }
         }

@@ -39,9 +39,17 @@ run all
 run close
 "@
 
+# Hand gw_sh a script FILE rather than piping the script into its stdin.
+# Piping goes through PowerShell's $OutputEncoding, which on some machines
+# prepends a UTF-8 BOM. gw_sh then reads the BOM as part of the first command
+# and dies with:  invalid command name "<BOM>open_project"
+# WriteAllText with ASCIIEncoding is BOM-free no matter how the shell is set up.
+$TCL_FILE = Join-Path ([System.IO.Path]::GetTempPath()) "hdmi_coin_build.tcl"
+[System.IO.File]::WriteAllText($TCL_FILE, $TCL, (New-Object System.Text.ASCIIEncoding))
+
 Push-Location $ROOT
 try {
-    $GOWIN_OUTPUT = @($TCL | & $GW_SH | ForEach-Object {
+    $GOWIN_OUTPUT = @(& $GW_SH $TCL_FILE | ForEach-Object {
         $LINE = $_.ToString()
         Write-Host $LINE
         $LINE

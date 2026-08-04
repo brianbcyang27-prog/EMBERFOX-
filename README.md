@@ -1,6 +1,17 @@
-# HDMI Coin
+# HDMI Coin — Emberfox
 
-Tang Nano 4K HDMI coin-catching game implemented in Verilog.
+Tang Nano 4K HDMI catch-and-jump arcade game implemented in Verilog.
+
+> **Playing the game / presenting it?** Read [EMBERFOX.md](EMBERFOX.md) instead.
+> It has the setting, the design reasoning, a plain-language code walkthrough,
+> and the list of art assets to draw. This README is the hardware reference.
+
+The game began as a coin catcher and keeps that whole half intact: objects still
+fall straight down, the background is still a still image, and the scoring
+system — the seven object types, their values, the 60 second clock, the high
+score — is unchanged. What is new is **the floor**: it spawns obstacles that
+slide in from the right and have to be jumped. So the player now moves
+left/right *and* jumps.
 
 Open this repository with `hdmi_coin` as the project root. The design keeps button input, game logic, render layers, and HDMI output separated so each part can be developed and explained independently.
 
@@ -117,12 +128,34 @@ output [0:0]  out_axis_tuser;
 
 Board buttons are active-low at the physical pin and become active-high pressed levels inside the game.
 
+Pin assignments below come from `src/hdmi_coin.cst`, which is what the hardware
+actually uses. (An earlier version of this README listed start on 18 and skill
+on 16; that was wrong.)
+
 ```text
-btn_left   pin 13
-btn_right  pin 17
-btn_start  pin 18
-btn_skill  pin 16
+btn_left   pin 13   move left
+btn_right  pin 17   move right
+btn_start  pin 15 ) whichever of these two the third button is wired to
+btn_skill  pin 18 ) acts as JUMP -- game_core ORs them together
 ```
+
+The board has **three** buttons, so two actions are folded in rather than given
+a button of their own:
+
+```text
+Ember Dash   LEFT + RIGHT together
+play again   JUMP, once the run has ended
+```
+
+Holding left and right at once already cancels out in the mover
+(`if (btn_left && !btn_right) ... else if (btn_right && !btn_left)`), which is
+what makes that combination free. `restart_armed` forces the player to release
+jump once after the run ends, so finishing mid-leap does not restart instantly.
+
+Every button pin has `PULL_MODE=UP` and `debounce` treats the pin as active-low,
+so a pin with no button on it reads as "not pressed" rather than "stuck down".
+That is why ORing the two spare pins for jump works no matter which one the
+third button actually sits on.
 
 Input path:
 
@@ -150,13 +183,20 @@ Current game states in `game_ctrl`:
 Reset starts directly in `playing`. State value `0` is currently unused.
 The state register stays inside `game_ctrl`; render layers only receive the simpler `game_over` signal.
 
-`btn_start` restarts the game:
+Restarting:
 
-- player returns to the center
+- player returns to the ground, velocity cleared
 - timer resets
 - score resets
 - active objects are cleared
 - state returns to playing
+- high score is kept
+
+The board has three buttons, so `btn_jump` doubles as restart once the run has
+ended. `restart_armed` requires the player to release jump first, otherwise
+finishing a run mid-jump would restart instantly and the results panel would
+never be seen. `btn_start` is still ORed in, so a fourth button also works if
+one is fitted.
 
 ### Timer and Score
 
@@ -164,14 +204,23 @@ The state register stays inside `game_ctrl`; render layers only receive the simp
 - `FPS` defines how many `frame_tick` pulses make one second; `timer` decreases once every `FPS` frame ticks.
 - When `timer` reaches 0, the game enters game over.
 - `timer` and `score` are stored as binary registers and converted to packed 3-digit BCD for the UI.
-- `high_score_bcd` starts from 0 and is stored as packed BCD for display and comparison.
-- `high_score_bcd` updates only when the game enters game over.
+- `high_score` starts from 0 and is stored as a **binary** register; `high_score_bcd` is a converter output for display only.
+- `high_score` updates only when the game enters game over, comparing binary values.
+- The BCD converters read the `score` / `high_score` / `timer` registers, never live collision results. Feeding `bin2bcd` the in-flight score put a whole double-dabble ripple inside the collision path and cost 14 ns of setup slack.
 - `+time` objects add `TIME_BONUS`, currently 3 seconds.
 - `charge` objects add 1 skill charge, up to `SKILL_CHARGE_MAX`, currently 5.
-- In the base branch, `btn_skill` is wired but does not trigger a gameplay effect.
-- `skill_slot` owns the common skill lifecycle: button edge detect, charge check, timer countdown, `skill_on`, and `skill_start`.
-- In the base branch, `SKILL_ENABLE = 0`, so `skill_slot` does not start or consume charge.
-- Skill patches enable the slot and connect one gameplay effect through existing hook points.
+- `skill_slot` owns the common skill lifecycle: button edge detect, charge check, timer countdown, `skill_on`, and `skill_start`. It is unchanged from the coin game.
+- `SKILL_ENABLE = 1` and `SKILL_DURATION = 8`: the skill is **Ember Dash**.
+- `skill_start` is triggered by holding **left + right together**, since all
+  three physical buttons are already spoken for.
+- While `skill_on`: falling hazards and ground obstacles both pay `OBS_BURN_BONUS`
+  (+1) instead of subtracting, gravity weakens from `GRAVITY` to `GRAVITY_DASH`
+  so jumps float, and the fire sprite is drawn.
+
+The floor speeds up as the clock runs down: `obs_speed` rises 4 → 7 px/frame and
+`obs_period` shrinks alongside it. Without that shrink, faster obstacles would be
+spaced further apart on screen and the game would get *easier* as it sped up.
+The falling objects are not ramped — they keep the coin game's constants.
 
 Object effects:
 
@@ -192,21 +241,20 @@ Score clamps to the displayable BCD range, 0 to 999.
 - Display size: 64 x 64
 - Source sprite size: 32 x 32
 - Scaling: 2x pixel replication
-- Initial x: 288
-- Fixed y: 352
-- Movement: left / right only
-- Default speed: 8 px/frame
-- Skill patches can change the movement block locally.
-- Facing direction uses right-facing source art; left-facing display mirrors the sprite address
-- Two-frame walk animation: the source frame alternates as the player travels (`player_x[6]`)
+- Initial x: 288, speed 8 px/frame (unchanged from the coin game)
+- y: variable, `GROUND_Y` = 352 when standing, driven by gravity and jumping
+- Movement: left / right, plus jump / double jump
+- Facing direction uses right-facing source art; facing left mirrors the sprite address
+- Vertical state is 8.4 fixed point (16 units = 1 pixel) so gravity can be
+  gentler than 1 px/frame; `player_y` is just the top 9 bits
+- Four-frame sheet: 0/1 = walk cycle (alternates on `player_x[6]`), 2 = rising, 3 = falling
 - When `skill_on` is active, the player sprite switches to the fire skill sprite
 
-Player assets are RGB323 (8-bit) two-frame walk sheets. Each `.mem` holds two 32 x 32
-frames concatenated (ROM depth 2048), and the pixel value `0x00` is transparent:
+Player assets are RGB323 (8-bit) sprite sheets, pixel value `0x00` transparent:
 
 ```text
-src/assets/player_right_32.mem
-src/assets/player_skill_32.mem
+src/assets/player_right_32.mem   4 frames, ROM depth 4096
+src/assets/player_skill_32.mem   2 frames, ROM depth 2048
 ```
 
 The player ROMs are read as `DATA_WIDTH(8)` and converted to BGR888 by
@@ -214,16 +262,32 @@ The player ROMs are read as `DATA_WIDTH(8)` and converted to BGR888 by
 
 ### Objects
 
-- Maximum active objects: 16
-- Display size: 32 x 32
-- Source sprite size: 16 x 16
-- Scaling: 2x pixel replication
-- Storage: RGB323 (8-bit); all types share one atlas ROM addressed by `{obj_type, src_y, src_x}`
-- Default fall speed: 2 px/frame
-- Default spawn period: 24 frames
-- Skill patches can change the spawn counter reload locally.
+Two separate kinds of thing live in the play field.
 
-Object type probability:
+**Falling objects** (unchanged from the coin game):
+
+- Maximum active: 6
+- Display size: 32 x 32, source 16 x 16, 2x pixel replication
+- Storage: RGB323 (8-bit); all types share one atlas ROM addressed by `{obj_type, src_y, src_x}`
+- Motion: fall down at `FALL_SPEED` = 2 px/frame, removed on catch or on reaching the floor
+- Spawn period: 24 frames
+
+**Ground obstacles** (new):
+
+- Maximum active: 3
+- Same 32 x 32 display size, drawn from **atlas slot 7**
+- Fixed at `OBS_Y` = 384 so they rest on the floor line at 416
+- Motion: slide right-to-left at 4 px/frame rising to 7 as the clock runs down
+- Spawn period: 95 frames at the start, down to 58
+- Tripping on one costs `OBS_PENALTY` (5) and shatters it; during Ember Dash it
+  pays `OBS_BURN_BONUS` (+1) instead
+
+Because obstacles never move vertically, their top and bottom edges are
+compile-time constants — so the vertical half of both the collision test and the
+render test is a single comparison shared by all three, rather than one per
+obstacle.
+
+Object type probability (unchanged from the coin game):
 
 ```text
 +1      20%
@@ -235,9 +299,13 @@ Object type probability:
 charge  10%
 ```
 
-`spawn_queue` creates raw spawn data. `spawn_postprocess` sits between `spawn_queue` and the object registers. The base version is pass-through, and skill branches can use it to remap object type or position without changing the raw queue.
+`spawn_queue` creates raw spawn data. `spawn_postprocess` now decides the height
+lane from the object type — the more an ember is worth, the higher it flies, and
+frost shards sit on the ground. That one `case` statement is the level design.
 
 Per-object state:
+
+Per-object state (falling objects, unchanged from the coin game):
 
 ```text
 obj_valid
@@ -247,21 +315,44 @@ obj_ypos
 obj_type
 ```
 
-Coordinate formula:
-
 ```text
 obj_x = 64 + obj_lane * 32 + obj_xoff
-obj_ypos = stored object y pixel coordinate
 ```
 
-The multi-object values are exported as packed buses:
+Per-obstacle state:
 
 ```text
-obj_valid_bus
-obj_lane_bus
-obj_xoff_bus
-obj_ypos_bus
-obj_type_bus
+obs_valid
+obs_xpos    biased x (see below)
+```
+
+Both use **slots with a valid bit** rather than a compacting array: a slot is
+either in use or it is not, and killing something just clears its bit. Nothing
+shuffles down to fill a gap, which keeps the logic small and lets several things
+disappear on the same frame with no special case. Spawning picks the lowest free
+slot with a priority encoder.
+
+Obstacles store x with `OBS_X_BIAS` (64) already added, so one can sit off the
+left edge without the unsigned counter wrapping:
+
+```text
+screen_x = obs_xpos - OBS_X_BIAS
+
+obs_xpos =  32  ->  screen_x = -32   fully off the left, delete it
+obs_xpos =  64  ->  screen_x =   0   touching the left edge
+obs_xpos = 704  ->  screen_x = 640   just off the right, spawn here
+```
+
+`obj_layer` adds the same bias to the pixel it is testing rather than
+subtracting it from every obstacle — one adder for the screen instead of one per
+obstacle. It also means no underflow guard is needed: a slot is killed at or
+below 32 and the speed never exceeds 7, so anything alive stays positive.
+
+The values are exported as packed buses:
+
+```text
+obj_valid_bus  obj_lane_bus  obj_xoff_bus  obj_ypos_bus  obj_type_bus
+obs_valid_bus  obs_xpos_bus
 ```
 
 Object assets:
@@ -274,7 +365,8 @@ src/assets/obj_atlas.mem   (all 7 sprites, RGB323, one 256-entry slot per type)
 
 ### `bg_layer`
 
-Generates the base stream:
+Generates the base stream. Unchanged from the coin game — the background is a
+still image and does not scroll:
 
 - reads `src/assets/background.mem` (single 80 x 50 RGB565 image)
 - shown 8x by pixel replication in the band `Y in [16, 416)`, `X in [0, 640)` (640 x 400)

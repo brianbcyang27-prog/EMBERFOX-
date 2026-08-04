@@ -7,7 +7,10 @@ module res_overlay #(
 	input clk,
 	input resetn,
 
-	input show,
+	// 0 = hidden (playing), 1 = run over, 2 = difficulty menu, 3 = skill menu
+	input [1:0] mode,
+	input [2:0] title_id,
+	input [1:0] menu_sel,
 	input [11:0] score_bcd,
 	input [11:0] high_score_bcd,
 
@@ -51,15 +54,38 @@ localparam [9:0] BEST_VAL_Y    = 10'd288;
 
 // combined-font glyph indices (see .vscode/bitmap2mem.ps1)
 localparam GLYPH_SPACE = 5'd10;
+// 11..21 = B C E I M O P R S T U      22..27 = A D H L N Y
+localparam G_B = 5'd11, G_C = 5'd12, G_E = 5'd13, G_I = 5'd14, G_M = 5'd15;
+localparam G_O = 5'd16, G_P = 5'd17, G_R = 5'd18, G_S = 5'd19, G_T = 5'd20;
+localparam G_U = 5'd21, G_A = 5'd22, G_D = 5'd23, G_H = 5'd24, G_L = 5'd25;
+localparam G_N = 5'd26, G_Y = 5'd27;
 
 localparam [1:0] TXT_TITLE = 2'd0;
-localparam [1:0] TXT_SCORE = 2'd1;
+localparam [1:0] TXT_HEAT  = 2'd1;
 localparam [1:0] TXT_BEST  = 2'd2;
+
+// title_id values, matching game_ctrl
+localparam TITLE_TIMEUP = 3'd0;
+localparam TITLE_EASY   = 3'd1;
+localparam TITLE_NORMAL = 3'd2;
+localparam TITLE_HARD   = 3'd3;
+localparam TITLE_EMBER  = 3'd4;
+localparam TITLE_TIME   = 3'd5;
+localparam TITLE_LURE   = 3'd6;
+
+// The three little option dots under the menu title
+localparam [9:0] DOT_Y  = 10'd212;
+localparam [9:0] DOT_H  = 10'd20;
+localparam [9:0] DOT_W  = 10'd40;
+localparam [9:0] DOT_X0 = 10'd242;
+localparam [9:0] DOT_GAP = 10'd20;
 
 localparam [23:0] COLOR_PANEL  = 24'h000000;
 localparam [23:0] COLOR_BORDER = 24'hFFFFFF;
 localparam [23:0] COLOR_TEXT   = 24'hFFFFFF;
 localparam [23:0] COLOR_TITLE  = 24'h20EAFF;
+localparam [23:0] COLOR_DOT_ON  = 24'h20EAFF;   // the chosen option
+localparam [23:0] COLOR_DOT_OFF = 24'h404040;   // the other two
 
 `ifdef RES_OVERLAY_DIM
 localparam DIM_BACKGROUND = 1;
@@ -74,9 +100,36 @@ wire fire = in_axis_tvalid && in_axis_tready;
 wire [`SVO_XYBITS-1:0] pixel_x = in_axis_tuser[0] ? 0 : hcursor;
 wire [`SVO_XYBITS-1:0] pixel_y = in_axis_tuser[0] ? 0 : vcursor;
 
+wire show        = mode != 2'd0;
+wire show_result = mode == 2'd1;
+wire show_menu   = mode[1];            // 2 or 3
+
 wire in_panel =
 	pixel_x >= PANEL_X0 && pixel_x < PANEL_X1 &&
 	pixel_y >= PANEL_Y0 && pixel_y < PANEL_Y1;
+
+// Three little boxes under the title; the chosen one is filled bright.
+// Cheap: three fixed rectangles and a compare against menu_sel.
+reg dot_on;
+reg dot_sel;
+integer d;
+reg [9:0] dot_left;
+
+always @(*) begin
+	dot_on = 1'b0;
+	dot_sel = 1'b0;
+	dot_left = 10'd0;
+
+	if (show_menu && pixel_y >= DOT_Y && pixel_y < DOT_Y + DOT_H) begin
+		for (d = 0; d < 3; d = d + 1) begin
+			dot_left = DOT_X0 + d * (DOT_W + DOT_GAP);
+			if (pixel_x >= dot_left && pixel_x < dot_left + DOT_W) begin
+				dot_on = 1'b1;
+				if (menu_sel == d[1:0]) dot_sel = 1'b1;
+			end
+		end
+	end
+end
 
 wire in_border =
 	in_panel &&
@@ -93,35 +146,70 @@ function [23:0] dim_bgr888;
 endfunction
 
 // Map a text string + char position to a combined-font glyph index.
+//
+// The title line is shared by every screen: it shows TIME UP when a run ends,
+// and the name of the highlighted option while in the menu. Reusing the same
+// 7-character field for all of them means the menu costs almost no extra
+// hardware - only this case statement grows.
 function [4:0] text_glyph;
 	input [1:0] tid;
+	input [2:0] tsel;              // which title, when tid == TXT_TITLE
 	input [2:0] idx;
 	begin
 		text_glyph = GLYPH_SPACE;
 		case (tid)
-			TXT_TITLE: case (idx)          // "TIME UP"
-				0: text_glyph = 5'd20;     // T
-				1: text_glyph = 5'd14;     // I
-				2: text_glyph = 5'd15;     // M
-				3: text_glyph = 5'd13;     // E
-				4: text_glyph = GLYPH_SPACE;
-				5: text_glyph = 5'd21;     // U
-				6: text_glyph = 5'd17;     // P
-				default: text_glyph = GLYPH_SPACE;
+			TXT_TITLE: case (tsel)
+				TITLE_TIMEUP: case (idx)       // "TIME UP"
+					0: text_glyph = G_T;  1: text_glyph = G_I;
+					2: text_glyph = G_M;  3: text_glyph = G_E;
+					5: text_glyph = G_U;  6: text_glyph = G_P;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				TITLE_EASY: case (idx)         // "EASY"
+					0: text_glyph = G_E;  1: text_glyph = G_A;
+					2: text_glyph = G_S;  3: text_glyph = G_Y;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				TITLE_NORMAL: case (idx)       // "NORMAL"
+					0: text_glyph = G_N;  1: text_glyph = G_O;
+					2: text_glyph = G_R;  3: text_glyph = G_M;
+					4: text_glyph = G_A;  5: text_glyph = G_L;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				TITLE_HARD: case (idx)         // "HARD"
+					0: text_glyph = G_H;  1: text_glyph = G_A;
+					2: text_glyph = G_R;  3: text_glyph = G_D;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				TITLE_EMBER: case (idx)        // "EMBER"
+					0: text_glyph = G_E;  1: text_glyph = G_M;
+					2: text_glyph = G_B;  3: text_glyph = G_E;
+					4: text_glyph = G_R;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				TITLE_TIME: case (idx)         // "TIME"
+					0: text_glyph = G_T;  1: text_glyph = G_I;
+					2: text_glyph = G_M;  3: text_glyph = G_E;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
+				default: case (idx)            // "LURE"
+					0: text_glyph = G_L;  1: text_glyph = G_U;
+					2: text_glyph = G_R;  3: text_glyph = G_E;
+					default: text_glyph = GLYPH_SPACE;
+				endcase
 			endcase
-			TXT_SCORE: case (idx)          // "SCORE"
-				0: text_glyph = 5'd19;     // S
-				1: text_glyph = 5'd12;     // C
-				2: text_glyph = 5'd16;     // O
-				3: text_glyph = 5'd18;     // R
-				4: text_glyph = 5'd13;     // E
+			TXT_HEAT: case (idx)           // "HEAT"
+				0: text_glyph = G_H;
+				1: text_glyph = G_E;
+				2: text_glyph = G_A;
+				3: text_glyph = G_T;
 				default: text_glyph = GLYPH_SPACE;
 			endcase
 			TXT_BEST: case (idx)           // "BEST"
-				0: text_glyph = 5'd11;     // B
-				1: text_glyph = 5'd13;     // E
-				2: text_glyph = 5'd19;     // S
-				3: text_glyph = 5'd20;     // T
+				0: text_glyph = G_B;
+				1: text_glyph = G_E;
+				2: text_glyph = G_S;
+				3: text_glyph = G_T;
 				default: text_glyph = GLYPH_SPACE;
 			endcase
 			default: text_glyph = GLYPH_SPACE;
@@ -175,12 +263,13 @@ always @(*) begin
 	gc        = 9'd0;
 	ci        = 3'd0;
 
-	// Title "TIME UP", scale 4
+	// Title line, scale 4. Shows TIME UP after a run, or the highlighted
+	// option's name while in the menu.
 	if (pixel_y >= TITLE_Y && pixel_y < TITLE_Y + 48) begin
 		gc = glyph_col(pixel_x, TITLE_X, TITLE_STRIDE, TITLE_GW, 4'd7);
 		if (gc[8]) begin
 			ci = gc[7:5];
-			glyph = text_glyph(TXT_TITLE, ci);
+			glyph = text_glyph(TXT_TITLE, title_id, ci);
 			if (glyph != GLYPH_SPACE) begin
 				glyph_hit = 1'b1;
 				is_title  = 1'b1;
@@ -190,12 +279,14 @@ always @(*) begin
 		end
 	end
 
-	// Score label "SCORE", scale 2
-	if (!glyph_hit && pixel_y >= SCORE_LABEL_Y && pixel_y < SCORE_LABEL_Y + 24) begin
-		gc = glyph_col(pixel_x, SCORE_LABEL_X, LABEL_STRIDE, LABEL_GW, 4'd5);
+	// Heat label "HEAT", scale 2. Only on the results screen - in the menu
+	// this row is where the option dots go instead.
+	if (!glyph_hit && show_result &&
+		pixel_y >= SCORE_LABEL_Y && pixel_y < SCORE_LABEL_Y + 24) begin
+		gc = glyph_col(pixel_x, SCORE_LABEL_X, LABEL_STRIDE, LABEL_GW, 4'd4);
 		if (gc[8]) begin
 			ci = gc[7:5];
-			glyph = text_glyph(TXT_SCORE, ci);
+			glyph = text_glyph(TXT_HEAT, 3'd0, ci);
 			if (glyph != GLYPH_SPACE) begin
 				glyph_hit = 1'b1;
 				font_x    = gc[4:0] >> 1;
@@ -209,7 +300,7 @@ always @(*) begin
 		gc = glyph_col(pixel_x, BEST_LABEL_X, LABEL_STRIDE, LABEL_GW, 4'd4);
 		if (gc[8]) begin
 			ci = gc[7:5];
-			glyph = text_glyph(TXT_BEST, ci);
+			glyph = text_glyph(TXT_BEST, 3'd0, ci);
 			if (glyph != GLYPH_SPACE) begin
 				glyph_hit = 1'b1;
 				font_x    = gc[4:0] >> 1;
@@ -218,8 +309,9 @@ always @(*) begin
 		end
 	end
 
-	// Score value (3 BCD digits), scale 4
-	if (!glyph_hit && pixel_y >= SCORE_VAL_Y && pixel_y < SCORE_VAL_Y + 48) begin
+	// Heat value (3 BCD digits), scale 4. Results screen only.
+	if (!glyph_hit && show_result &&
+		pixel_y >= SCORE_VAL_Y && pixel_y < SCORE_VAL_Y + 48) begin
 		gc = glyph_col(pixel_x, VALUE_X, VAL_STRIDE, VAL_GW, 4'd3);
 		if (gc[8]) begin
 			ci = gc[7:5];
@@ -273,6 +365,8 @@ reg [2:0] font_x_d;
 reg show_d;
 reg in_panel_d;
 reg in_border_d;
+reg dot_on_d;
+reg dot_sel_d;
 reg [SVO_BITS_PER_PIXEL-1:0] base_d;
 reg [0:0] tuser_d;
 reg tvalid_d;
@@ -287,6 +381,7 @@ wire [23:0] bg_sel = show_d ? dimmed : base_d;
 
 assign out_axis_tdata =
 	(show_d && glyph_on)     ? (is_title_d ? COLOR_TITLE : COLOR_TEXT) :
+	(show_d && dot_on_d)     ? (dot_sel_d ? COLOR_DOT_ON : COLOR_DOT_OFF) :
 	(show_d && in_border_d)  ? COLOR_BORDER :
 	(show_d && in_panel_d)   ? COLOR_PANEL :
 							   bg_sel;
@@ -299,6 +394,8 @@ always @(posedge clk) begin
 		show_d <= 0;
 		in_panel_d <= 0;
 		in_border_d <= 0;
+		dot_on_d <= 0;
+		dot_sel_d <= 0;
 		base_d <= 0;
 		tuser_d <= 0;
 		tvalid_d <= 0;
@@ -309,6 +406,8 @@ always @(posedge clk) begin
 			is_title_d <= is_title;
 			font_x_d <= font_x;
 			show_d <= show;
+			dot_on_d <= dot_on;
+			dot_sel_d <= dot_sel;
 			in_panel_d <= in_panel;
 			in_border_d <= in_border;
 			base_d <= in_axis_tdata;

@@ -16,7 +16,9 @@ param(
 #                    index 0-9  = digits (reused from bitmap/0..9.txt)
 #                    index 10   = space (blank)
 #                    index 11-21= B C E I M O P R S T U
-#                    index 22-31= blank padding
+#                    index 22-27= A D H L N Y   (added for the start menu:
+#                                 EASY / NORMAL / HARD and the skill names)
+#                    index 28-31= blank padding, still free for 4 more glyphs
 
 $COLS = 6
 $ROWS = 12
@@ -41,6 +43,8 @@ for ($i = 0; $i -lt 32; $i++) { $resGlyphs[$i] = $null }
 foreach ($d in 0..9) { $resGlyphs[$d] = "$d" }
 $letters = @('B','C','E','I','M','O','P','R','S','T','U')  # indices 11..21
 for ($i = 0; $i -lt $letters.Count; $i++) { $resGlyphs[11 + $i] = $letters[$i] }
+$extra = @('A','D','H','L','N','Y')                        # indices 22..27
+for ($i = 0; $i -lt $extra.Count; $i++) { $resGlyphs[22 + $i] = $extra[$i] }
 
 # Return the 16 packed hex words for one glyph (blank if $basename is $null).
 function Pack-Glyph {

@@ -9,6 +9,7 @@ module skill_slot #(
 	input resetn,
 	input sec_tick,
 	input restart,
+	input clear,
 	input btn_skill,
 	input [2:0] skill_charge,
 
