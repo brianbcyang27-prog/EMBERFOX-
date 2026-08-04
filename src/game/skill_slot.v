@@ -9,7 +9,6 @@ module skill_slot #(
 	input resetn,
 	input sec_tick,
 	input restart,
-	input clear,
 	input btn_skill,
 	input [2:0] skill_charge,
 
@@ -34,7 +33,7 @@ always @(posedge clk) begin
 		btn_q <= btn_skill;
 
 		if (skill_start) begin
-			skill_timer <= DURATION;
+			skill_timer <= DURATION[7:0];
 		end else if (sec_tick && skill_timer != 0) begin
 			skill_timer <= skill_timer - 1;
 		end

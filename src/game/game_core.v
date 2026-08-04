@@ -92,6 +92,7 @@ wire [MAX_OBJ*OBJ_Y_BITS   -1:0] obj_ypos_bus;
 wire [MAX_OBJ*OBJ_TYPE_BITS-1:0] obj_type_bus;
 wire [MAX_OBS             -1:0] obs_valid_bus;
 wire [MAX_OBS             -1:0] obs_tall_bus;
+wire [MAX_OBS             -1:0] obs_gain_bus;
 wire [MAX_OBS*OBS_X_BITS  -1:0] obs_xpos_bus;
 wire [1:0] menu_mode;
 wire [2:0] title_id;
@@ -141,6 +142,7 @@ game_ctrl #(
 
 	.obs_valid_bus(obs_valid_bus),
 	.obs_tall_bus(obs_tall_bus),
+	.obs_gain_bus(obs_gain_bus),
 	.obs_xpos_bus(obs_xpos_bus),
 
 	.menu_mode(menu_mode),
@@ -198,6 +200,7 @@ obj_layer #(
 
 	.obs_valid_bus(obs_valid_bus),
 	.obs_tall_bus(obs_tall_bus),
+	.obs_gain_bus(obs_gain_bus),
 	.obs_xpos_bus(obs_xpos_bus),
 
 	.in_axis_tvalid(bg_tvalid),

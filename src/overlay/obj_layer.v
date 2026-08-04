@@ -43,6 +43,7 @@ module obj_layer #(
 
 	input [MAX_OBS            -1:0] obs_valid_bus,
 	input [MAX_OBS            -1:0] obs_tall_bus,
+	input [MAX_OBS            -1:0] obs_gain_bus,
 	input [MAX_OBS*OBS_X_BITS -1:0] obs_xpos_bus,
 
 	// input stream from previous layer
@@ -59,10 +60,12 @@ module obj_layer #(
 );
 `SVO_DECLS
 
-// 4-frame walk/air sheet: {frame(2), src_y(5), src_x(5)}
+// 2-frame walk sheet: {frame(1), src_y(5), src_x(5)}.
+// The air poses (player_frame 2/3) share frame bit 0, so jumping keeps
+// showing the walk frames instead of reading past the end of the ROM.
 localparam PLAYER_SRC_BITS   = 5;
-localparam PLAYER_ADDR_WIDTH = 12;
-localparam PLAYER_DEPTH      = 4096;
+localparam PLAYER_ADDR_WIDTH = 11;
+localparam PLAYER_DEPTH      = 2048;
 // 2-frame fire sheet: {frame(1), src_y(5), src_x(5)}
 localparam SKILL_ADDR_WIDTH  = 11;
 localparam SKILL_DEPTH       = 2048;
@@ -112,6 +115,7 @@ wire [5:0] obs_local_y_tall  = pixel_y[9:0] - `OBS_TALL_Y;
 integer obs_i;
 reg obs_hit;
 reg obs_hit_tall;
+reg obs_gain_d;
 reg [4:0] obs_local_x;
 reg [OBS_X_BITS-1:0] scan_obs_x;
 reg [10:0] scan_obs_lx;
@@ -119,6 +123,7 @@ reg [10:0] scan_obs_lx;
 always @(*) begin
 	obs_hit = 0;
 	obs_hit_tall = 0;
+	obs_gain_d = 0;
 	obs_local_x = 0;
 	scan_obs_x = 0;
 	scan_obs_lx = 0;
@@ -133,6 +138,7 @@ always @(*) begin
 			scan_obs_lx = pixel_x_biased - scan_obs_x;
 			obs_hit = 1;
 			obs_hit_tall = obs_tall_bus[obs_i];
+			obs_gain_d = obs_gain_bus[obs_i];
 			obs_local_x = scan_obs_lx[4:0];
 		end
 	end
@@ -190,13 +196,16 @@ always @(*) begin
 end
 
 // ---------------------------------------------------------------------------
-// One atlas ROM serves both. Falling objects use slots 0-6, obstacles use
-// slot 7, so the type bits pick the sprite and no output mux is needed.
-// A falling object wins if both land on the same pixel (it is in front).
-// 16x16 art shown at 32x32: dropping the bottom bit repeats every pixel twice.
+// One atlas ROM serves both. Falling objects use slots 0-6; ground obstacles
+// reuse the "+1" sprite (slot 0) when they pay you and the "-3" sprite (slot 3)
+// when they cost you. A falling object wins if both land on the same pixel
+// (it is in front). 16x16 art shown at 32x32: dropping the bottom bit repeats
+// every pixel twice.
 // ---------------------------------------------------------------------------
 wire atlas_hit = obj_hit || obs_hit;
-wire [OBJ_TYPE_BITS-1:0] atlas_type = obj_hit ? obj_type_now : `OBS_TYPE;
+wire [OBJ_TYPE_BITS-1:0] atlas_type = obj_hit ? obj_type_now
+											 : (obs_gain_d ? `OBS_GAIN_TYPE
+														   : `OBS_LOSS_TYPE);
 wire [4:0] atlas_local_x = obj_hit ? obj_local_x : obs_local_x;
 
 wire [3:0] atlas_src_x = atlas_local_x[4:1];
@@ -219,9 +228,9 @@ wire [PLAYER_SRC_BITS-1:0] player_src_y = player_rel_y[5:1];
 wire [PLAYER_SRC_BITS-1:0] player_addr_x = player_dir ? player_src_x
 													  : (5'd31 - player_src_x);
 
-// Walk sheet holds 4 poses: 0 = walk A, 1 = walk B, 2 = rising, 3 = falling.
-wire [PLAYER_ADDR_WIDTH-1:0] player_addr = {player_frame, player_src_y, player_addr_x};
-// Fire sheet holds only the 2 walk poses, so the air frames reuse frame bit 0.
+// Walk sheet holds the 2 walk poses; the air frames (2/3) reuse frame bit 0.
+wire [PLAYER_ADDR_WIDTH-1:0] player_addr = {player_frame[0], player_src_y, player_addr_x};
+// Fire sheet holds only the 2 walk poses too, so it uses the same frame bit.
 wire [SKILL_ADDR_WIDTH-1:0] skill_addr = {player_frame[0], player_src_y, player_addr_x};
 
 wire [7:0] player_normal_rgb;

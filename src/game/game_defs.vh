@@ -34,17 +34,18 @@
 `define OBJ_H         10'd32
 
 // ---- ground obstacles ----------------------------------------------------
-// Two sizes, both drawn from the SAME 16x16 sprite in atlas slot 7 - the tall
-// one just stretches it 4x vertically instead of 2x. So a second obstacle
-// shape costs no extra ROM, and BSRAM is already completely full.
+// Two sizes, both drawn from a 16x16 atlas sprite - the tall one just
+// stretches it 4x vertically instead of 2x, so a second obstacle shape costs
+// no extra ROM. Obstacles come in two flavours: gain (+1, green-ish "+1" art)
+// and loss (-3, "-3" art). They reuse falling-object atlas slots.
 //
 //   short   y 384..416   32 px tall, a hop clears it
 //   tall    y 352..416   64 px tall, needs a real jump
 `define OBS_W         10'd32
-`define OBS_H         10'd32
 `define OBS_Y         10'd384   // 384 + 32 = 416, so it sits exactly on the floor
 `define OBS_TALL_Y    10'd352   // 352 + 64 = 416, same floor line
-`define OBS_TYPE      3'd7      // atlas slot 7 (slots 0-6 are the falling objects)
+`define OBS_GAIN_TYPE 3'd0      // atlas slot: the "+1" sprite, pays points
+`define OBS_LOSS_TYPE 3'd3      // atlas slot: the "-3" sprite, costs points
 
 // ---- Lure skill ----------------------------------------------------------
 // How far past the sprite the catch box reaches while Lure is running.

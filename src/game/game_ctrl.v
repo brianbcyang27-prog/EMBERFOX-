@@ -33,7 +33,8 @@ module game_ctrl #(
 	parameter MAX_OBS = 3,
 	parameter OBS_X_BITS = 11,
 	parameter OBS_SPEED_BASE = 3,     // px/frame at the start of a HARD run
-	parameter OBS_PENALTY = 3,        // heat lost for tripping on one
+	parameter OBS_PENALTY = 3,        // heat lost for tripping on a loss obstacle
+	parameter OBS_BONUS = 1,          // heat gained for tripping on a gain obstacle
 	parameter OBS_BURN_BONUS = 1,     // heat gained instead, while Ember burns
 
 	// ---- moving and jumping ---------------------------------------------
@@ -77,6 +78,7 @@ module game_ctrl #(
 
 	output [MAX_OBS            -1:0] obs_valid_bus,
 	output [MAX_OBS            -1:0] obs_tall_bus,
+	output [MAX_OBS            -1:0] obs_gain_bus,
 	output reg [MAX_OBS*OBS_X_BITS-1:0] obs_xpos_bus,
 
 	// start-menu display
@@ -145,6 +147,7 @@ reg [OBJ_Y_BITS   -1:0] obj_ypos [0:MAX_OBJ-1];
 
 reg [MAX_OBS-1:0]      obs_valid;
 reg [MAX_OBS-1:0]      obs_tall;      // 1 = the 64 px version
+reg [MAX_OBS-1:0]      obs_gain;      // 1 = pays points, 0 = costs points
 reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
 
 reg [1:0] state;
@@ -161,6 +164,7 @@ reg restart_armed;
 assign obj_valid_bus = obj_valid;
 assign obs_valid_bus = obs_valid;
 assign obs_tall_bus = obs_tall;
+assign obs_gain_bus = obs_gain;
 assign game_over = state == S_OVER;
 
 wire in_menu = (state == S_MENU_DIFF) || (state == S_MENU_SKILL);
@@ -632,7 +636,9 @@ always @(*) begin
 
 	// --- tripped on a ground obstacle ---
 	if (obs_hit_valid) begin
-		if (skill_ember)
+		if (obs_gain[obs_hit_idx])
+			score_delta_eff = score_delta_eff + OBS_BONUS;
+		else if (skill_ember)
 			score_delta_eff = score_delta_eff + OBS_BURN_BONUS;
 		else
 			score_delta_eff = score_delta_eff - OBS_PENALTY;
@@ -730,6 +736,7 @@ always @(posedge clk) begin
 		obj_valid <= 0;
 		obs_valid <= 0;
 		obs_tall <= 0;
+		obs_gain <= 0;
 		timer <= TIMER_START;
 		score <= 0;
 		high_score <= 0;
@@ -773,6 +780,7 @@ always @(posedge clk) begin
 			obj_valid <= 0;
 			obs_valid <= 0;
 			obs_tall <= 0;
+			obs_gain <= 0;
 			// The jump button that got us here is still held down. Pretend it
 			// was already down last frame so it does not immediately confirm
 			// the menu as well.
@@ -802,12 +810,13 @@ always @(posedge clk) begin
 					player_y_fx <= GROUND_FX;
 					player_vy <= 0;
 					air_jumps <= AIR_JUMPS_MAX;
-					obj_valid <= 0;
-					obs_valid <= 0;
-					obs_tall <= 0;
-					timer <= TIMER_START;
-					score <= 0;
-					skill_charge <= 0;
+				obj_valid <= 0;
+				obs_valid <= 0;
+				obs_tall <= 0;
+				obs_gain <= 0;
+				timer <= TIMER_START;
+				score <= 0;
+				skill_charge <= 0;
 					state <= S_PLAY;
 					frame_cnt <= 0;
 					anim_cnt <= 0;
@@ -887,10 +896,10 @@ always @(posedge clk) begin
 				if (obs_spawn) begin
 					obs_valid[obs_free_idx] <= 1'b1;
 					obs_xpos[obs_free_idx] <= `OBS_SPAWN_X;
-					// Tall obstacles only on HARD. The bit comes from the head
-					// of the spawn FIFO, which is already random and already
-					// changing - no second LFSR needed.
+					// The bits come from the head of the spawn FIFO, which is
+					// already random and already changing - no second LFSR.
 					obs_tall[obs_free_idx] <= (diff_sel == DIFF_HARD) && spawn_data[10];
+					obs_gain[obs_free_idx] <= spawn_data[9];
 				end
 
 				// ---- spawn countdowns ----
