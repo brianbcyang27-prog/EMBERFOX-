@@ -22,7 +22,7 @@ A catch-and-jump arcade game for the Tang Nano 4K, built on the HDMI Coin hardwa
 > put the sun back. But you can catch what falls, stay ahead of what slides, and
 > every ember you hold buys the plain a few more seconds of dusk.
 >
-> Sixty seconds. Then the dark.
+> Ninety seconds. Then the dark.
 
 | In the game | In the story |
 |---|---|
@@ -40,9 +40,9 @@ A catch-and-jump arcade game for the Tang Nano 4K, built on the HDMI Coin hardwa
 ## 2. What changed from the coin game
 
 The scoring system is **untouched** — same seven object types, same values, same
-60 second clock, same high score. Objects still fall straight down and the
+90 second clock, same high score. Objects still fall straight down and the
 background is still a still image. What is new is **the floor**, **a start
-menu**, and **three skills to choose between**.
+menu**, **three skills to choose between**, and a gentler, longer default run.
 
 | | Coin catcher | Emberfox |
 |---|---|---|
@@ -50,7 +50,7 @@ menu**, and **three skills to choose between**.
 | Background | still image | **same, unchanged** |
 | Player | moves left / right | left / right **and jumps** |
 | The floor | flat and empty | **spawns ridges** in two heights |
-| On reset | straight into a run | **start menu**: pick difficulty, then skill |
+| On reset | straight into a run | **start menu**: difficulty, skill, how-to, countdown |
 | Difficulty | fixed | **EASY / NORMAL / HARD** |
 | Skill | wired but did nothing | **EMBER / TIME / LURE** |
 
@@ -61,8 +61,8 @@ menu**, and **three skills to choose between**.
 | Button | Pin | In a run | In the menu |
 |---|---|---|---|
 | `btn_left` | 13 | Move left | Previous option |
-| `btn_right` | 17 | Move right | Next option |
-| `btn_start` **or** `btn_skill` | 15 or 18 | **Jump** (tap = hop, hold = full jump, again in mid-air = double jump) | **Confirm** |
+| `btn_right` = **JUMP** | 17 | **Jump** (tap = hop, hold = full jump, again in mid-air = a third jump) | **Confirm** |
+| `btn_start` **or** `btn_skill` | 15 or 18 | Move right | Next option |
 | `btn_left` + `btn_right` together | — | **Use your skill** (needs 5 charges) | — |
 
 **Three buttons, seven actions.** The extras are folded in rather than given
@@ -75,10 +75,12 @@ buttons of their own:
 - **Results screen → JUMP** returns to the start menu, so you can change
   difficulty and skill between runs. The high score survives.
 
-**Which pin is jump?** Either spare one — `game_core` ORs them together
-(`btn_jump = btn_start || btn_skill`). Every button pin has `PULL_MODE=UP` and
-`debounce` treats it as active-low, so a pin with no button reads as "not
-pressed" forever. The third button works wherever it happens to be wired.
+**Which pin is jump?** Pin 17 — that is `btn_right`, rewired to jump so a tap
+is always a hop. The two spare pins are ORed together (`btn_move_right =
+btn_start || btn_skill`) and move the fox right, so the third physical button
+works as "move right" no matter which spare it is actually wired to. Every
+button pin has `PULL_MODE=UP` and `debounce` treats it as active-low, so a pin
+with no button reads as "not pressed" forever.
 
 **One detail that matters:** if the clock hits zero while you are *holding*
 jump — mid-leap, which happens constantly — the button is already down and
@@ -104,7 +106,7 @@ The fox is 64×64. Standing, its top edge is at **y = 352**, feet on the floor.
 
 ```text
 embers / shards    spawn at the TOP     fall DOWN at 2 px/frame     catch them
-floor ridges       spawn at the RIGHT   slide LEFT at 2-4 px/frame  jump them
+floor ridges       spawn at the RIGHT   slide LEFT at 1-3 px/frame  jump them
 ```
 
 The falling half is the original coin game, untouched: same `spawn_queue`, same
@@ -183,15 +185,24 @@ and "clear a tall one".
 State `0` was unused in the coin game. It is now the menu:
 
 ```text
-S_MENU_DIFF (0) --jump--> S_MENU_SKILL (3) --jump--> S_PLAY (1)
-        ^                                                |
-        +---------------- jump ---- S_OVER (2) <---------+
+S_MENU_DIFF (0) --jump--> S_MENU_SKILL (3) --jump--> S_HOWTO (4) --jump--> S_COUNT (5) --5s--> S_PLAY (1)
+        ^                                                                                            |
+        +--------------------------- jump ---------------- S_OVER (2) <-----------------------------+
 ```
 
 The menu costs almost no hardware because it **reuses the results panel**. The
 big title line already existed for `TIME UP`; it now renders whichever word is
 selected, chosen by a `title_id` from `game_ctrl`. Under it are three small
 boxes with the chosen one lit — three fixed rectangles and a compare.
+
+Two of the states are new screens, both drawn by the same panel:
+
+- **`S_HOWTO`** shows four lines of how-to text (catch embers, jump ridges,
+  move, and **PRESS JUMP WHEN READY**). Jumping here says "I'm ready" — the
+  press-to-start.
+- **`S_COUNT`** shows **GET READY** and a big 5 → 1 digit, one per second, then
+  drops straight into the run. The countdown shares the body/digit renderer, so
+  it costs a state and a counter, not a new layer.
 
 ### 4.8 The three skills
 
@@ -209,9 +220,9 @@ that already existed:
 
 | | Ridge speed | Frames between ridges | Tall ridges? |
 |---|---|---|---|
-| **EASY** | 2 (flat, no ramp) | 190 | no |
-| **NORMAL** | 2 → 3 | 160 → 130 | no |
-| **HARD** | 3 → 4 | 130 → 96 | yes |
+| **EASY** | 1 (flat, no ramp) | 210 | no |
+| **NORMAL** | 1 → 2 | 180 → 150 | no |
+| **HARD** | 2 → 3 | 150 → 114 | yes |
 
 The gap has to **shrink** as speed grows. If it did not, faster ridges would end
 up spaced further apart on screen and the game would get *easier* as it sped up.
@@ -266,16 +277,22 @@ becomes `00`; there is no black colour-key.
 | `obj_minus5_16.png` | 16×16 | 32×32 | RGB323 + alpha | big falling shard |
 | `obj_time_16.png` | 16×16 | 32×32 | RGB323 + alpha | sunstone |
 | `obj_charge_16.png` | 16×16 | 32×32 | RGB323 + alpha | ember crystal |
-| **`obj_rock_16.png`** | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | **the floor ridge — still a placeholder** |
+| `obj_btn1_16.png` | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | floor ridge — **gain** button (fox) |
+| `obj_btn2_16.png` | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | floor ridge — **gain** button (orb) |
+| `obj_btn3_16.png` | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | floor ridge — **loss** button (blue) |
+| `obj_btn4_16.png` | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | floor ridge — **loss** button (red) |
+| `obj_btn5_16.png` | 16×16 | 32×32 **and** 32×64 | RGB323 + alpha | floor ridge — **loss** button (red) |
 
 **Draw the fox facing right.** Facing left is done in hardware by reading each
 row backwards, so a left-facing sprite is never needed.
 
-**`obj_rock_16` is drawn at two sizes.** The tall ridge is the same art
+**The ridge sprites are drawn at two sizes.** The tall ridge is the same art
 stretched to 32×64 — so draw something that survives being pulled to twice its
 height. A jagged vertical spike works; anything with a recognisable square shape
 will look wrong when stretched. Root it at the **bottom** of the 16×16 box:
-it sits directly on the floor line.
+it sits directly on the floor line. `game_ctrl` picks which button sprite to
+show (atlas slots 7-11): gain obstacles are the fox (0) or orb (1) button, loss
+ones are the blue (2) or one of the red (3/4) buttons.
 
 ### Background
 
@@ -296,9 +313,9 @@ ridges and the fox's feet are.
 |---|---|---|
 | `bitmap/*.txt` | 6×12 characters | ASCII art, `#` = lit pixel |
 
-Digits `0-9` plus `B C E I M O P R S T U A D H L N Y`. The ROM holds 32 glyph
-slots and 28 are used, so **4 more letters can be added for free** — drop a new
-`.txt` in `bitmap/` and add it to the `$extra` list in `bitmap2mem.ps1`.
+Digits `0-9`, a blank, and `A-Z`. The ROM holds 48 glyph slots; indices 0-36 are
+used, so **11 more glyphs can be added for free** — drop a new `.txt` in
+`bitmap/` and add it to the `$extra` list in `bitmap2mem.ps1`.
 
 ### Rebuild assets
 
@@ -325,16 +342,16 @@ All at the top of `game_ctrl.v` unless noted:
 | `GRAVITY_DASH` | 7 | How much EMBER floats |
 | `JUMP_V` | 176 | Jump launch speed → height |
 | `AIR_JUMP_V` | 140 | Second jump strength |
-| `AIR_JUMPS_MAX` | 1 | 0 = no double jump, 2 = triple |
-| `OBS_SPEED_BASE` | 3 | HARD ridge speed, px/frame |
-| `OBS_PENALTY` | 3 | Heat lost for clipping a ridge |
+| `AIR_JUMPS_MAX` | 2 | 1 = double jump, 3 = triple jump |
+| `OBS_SPEED_BASE` | 2 | HARD ridge base speed, px/frame |
+| `OBS_PENALTY` | 2 | Heat lost for clipping a ridge |
 | `OBS_BURN_BONUS` | 1 | Heat gained instead, while EMBER burns |
 | `FALL_SPEED` | 2 | Falling object speed *(coin game value)* |
 | `SPAWN_PERIOD_FRAMES` | 24 | Frames between falling objects *(coin game value)* |
 | `PLAYER_SPEED_START` | 8 | Sideways speed *(coin game value)* |
 | `SKILL_DURATION` | 8 | Skill length, seconds |
 | `SKILL_CHARGE_MAX` | 5 | Crystals needed to fire a skill |
-| `TIMER_START` | 60 | Run length, seconds |
+| `TIMER_START` | 90 | Run length, seconds |
 | `LURE_PAD` *(game_defs.vh)* | 28 | How far LURE reaches |
 | `OBS_Y` / `OBS_TALL_Y` *(game_defs.vh)* | 384 / 352 | Ridge heights |
 

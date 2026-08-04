@@ -32,16 +32,16 @@ module game_core #(
 	// not have to change:
 	//
 	//   btn_left   pin 13   move left
-	//   btn_right  pin 17   move right
-	//   btn_start  pin 15 ) whichever of these two the third button is wired
-	//   btn_skill  pin 18 ) to, it acts as JUMP
+	//   btn_right  pin 17   JUMP (was move right, now swapped)
+	//   btn_start  pin 15 ) move right - whichever of these two the third
+	//   btn_skill  pin 18 ) button is wired to, it now moves the fox right
 	//
-	//   Ember Dash = LEFT + RIGHT together (see game_ctrl)
+	//   Ember Dash = LEFT + (move-right button) together (see game_ctrl)
 	//   play again = JUMP on the results screen
 	//
 	// An unused pin has PULL_MODE=UP and debounce treats it as active-low, so
 	// it reads as "not pressed" forever. ORing the two spare pins together
-	// means the third button works on either one.
+	// means the old jump button still works on either one.
 	input btn_left,
 	input btn_right,
 	input btn_start,
@@ -63,7 +63,8 @@ localparam OBJ_TYPE_BITS = 3;
 localparam OBJ_Y_BITS = 10;
 localparam OBS_X_BITS = 11;
 
-wire btn_jump = btn_start || btn_skill;
+wire btn_jump = btn_right;                    // pin 17 jumps
+wire btn_move_right = btn_start || btn_skill;  // pins 15/18 move right
 
 wire bg_tvalid;
 wire bg_tready;
@@ -92,11 +93,12 @@ wire [MAX_OBJ*OBJ_Y_BITS   -1:0] obj_ypos_bus;
 wire [MAX_OBJ*OBJ_TYPE_BITS-1:0] obj_type_bus;
 wire [MAX_OBS             -1:0] obs_valid_bus;
 wire [MAX_OBS             -1:0] obs_tall_bus;
-wire [MAX_OBS             -1:0] obs_gain_bus;
+wire [MAX_OBS*3           -1:0] obs_btn_bus;
 wire [MAX_OBS*OBS_X_BITS  -1:0] obs_xpos_bus;
-wire [1:0] menu_mode;
+wire [2:0] menu_mode;
 wire [2:0] title_id;
 wire [1:0] menu_sel;
+wire [2:0] count_val;
 wire [7:0] timer;
 wire [9:0] score;
 wire [11:0] timer_bcd;
@@ -126,7 +128,7 @@ game_ctrl #(
 	.frame_tick(frame_tick),
 
 	.btn_left(btn_left),
-	.btn_right(btn_right),
+	.btn_right(btn_move_right),
 	.btn_jump(btn_jump),
 
 	.player_x(player_x),
@@ -142,7 +144,7 @@ game_ctrl #(
 
 	.obs_valid_bus(obs_valid_bus),
 	.obs_tall_bus(obs_tall_bus),
-	.obs_gain_bus(obs_gain_bus),
+	.obs_btn_bus(obs_btn_bus),
 	.obs_xpos_bus(obs_xpos_bus),
 
 	.menu_mode(menu_mode),
@@ -157,7 +159,8 @@ game_ctrl #(
 	.skill_charge(skill_charge),
 	.skill_timer(skill_timer),
 	.skill_on(skill_on),
-	.game_over(game_over)
+	.game_over(game_over),
+	.count_val(count_val)
 );
 
 bg_layer #(
@@ -200,7 +203,7 @@ obj_layer #(
 
 	.obs_valid_bus(obs_valid_bus),
 	.obs_tall_bus(obs_tall_bus),
-	.obs_gain_bus(obs_gain_bus),
+	.obs_btn_bus(obs_btn_bus),
 	.obs_xpos_bus(obs_xpos_bus),
 
 	.in_axis_tvalid(bg_tvalid),
@@ -228,7 +231,7 @@ ui_layer #(
 	.skill_timer(skill_timer),
 	.game_over(game_over),
 	.btn_left(btn_left),
-	.btn_right(btn_right),
+	.btn_right(btn_move_right),
 
 	.in_axis_tvalid(obj_tvalid),
 	.in_axis_tready(obj_tready),
@@ -250,6 +253,7 @@ res_overlay #(
 	.mode(menu_mode),
 	.title_id(title_id),
 	.menu_sel(menu_sel),
+	.count_val(count_val),
 	.score_bcd(score_bcd),
 	.high_score_bcd(high_score_bcd),
 

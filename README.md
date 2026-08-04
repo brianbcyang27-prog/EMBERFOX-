@@ -8,7 +8,7 @@ Tang Nano 4K HDMI catch-and-jump arcade game implemented in Verilog.
 
 The game began as a coin catcher and keeps that whole half intact: objects still
 fall straight down, the background is still a still image, and the scoring
-system — the seven object types, their values, the 60 second clock, the high
+system — the seven object types, their values, the 90 second clock, the high
 score — is unchanged. What is new is **the floor**: it spawns obstacles that
 slide in from the right and have to be jumped. So the player now moves
 left/right *and* jumps.
@@ -134,9 +134,9 @@ on 16; that was wrong.)
 
 ```text
 btn_left   pin 13   move left
-btn_right  pin 17   move right
-btn_start  pin 15 ) whichever of these two the third button is wired to
-btn_skill  pin 18 ) acts as JUMP -- game_core ORs them together
+btn_right  pin 17   JUMP
+btn_start  pin 15 ) move right -- game_core ORs them together, so
+btn_skill  pin 18 ) whichever of these two the third button is wired to
 ```
 
 The board has **three** buttons, so two actions are folded in rather than given
@@ -154,8 +154,8 @@ jump once after the run ends, so finishing mid-leap does not restart instantly.
 
 Every button pin has `PULL_MODE=UP` and `debounce` treats the pin as active-low,
 so a pin with no button on it reads as "not pressed" rather than "stuck down".
-That is why ORing the two spare pins for jump works no matter which one the
-third button actually sits on.
+That is why ORing the two spare pins for move right works no matter which one
+the third button actually sits on.
 
 Input path:
 
@@ -176,12 +176,18 @@ raw active-low button
 Current game states in `game_ctrl`:
 
 ```text
+0: menu -- difficulty
+3: menu -- skill
+4: how-to screen
+5: countdown
 1: playing
 2: game over
 ```
 
-Reset starts directly in `playing`. State value `0` is currently unused.
-The state register stays inside `game_ctrl`; render layers only receive the simpler `game_over` signal.
+Reset starts in the difficulty menu. JUMP moves through the menus
+(difficulty → skill → how-to), then starts a 5 → 1 countdown before the run.
+The state register stays inside `game_ctrl`; render layers receive `game_over`
+and the `menu_mode` / `count_val` signals for the menu screens.
 
 Restarting:
 
@@ -192,11 +198,11 @@ Restarting:
 - state returns to playing
 - high score is kept
 
-The board has three buttons, so `btn_jump` doubles as restart once the run has
-ended. `restart_armed` requires the player to release jump first, otherwise
+The board has three buttons, so jump (pin 17) doubles as restart once the run
+has ended. `restart_armed` requires the player to release jump first, otherwise
 finishing a run mid-jump would restart instantly and the results panel would
-never be seen. `btn_start` is still ORed in, so a fourth button also works if
-one is fitted.
+never be seen. `btn_start` is still ORed into the right-mover, so a fourth
+button also works if one is fitted.
 
 ### Timer and Score
 
@@ -217,10 +223,14 @@ one is fitted.
   (+1) instead of subtracting, gravity weakens from `GRAVITY` to `GRAVITY_DASH`
   so jumps float, and the fire sprite is drawn.
 
-The floor speeds up as the clock runs down: `obs_speed` rises 4 → 7 px/frame and
-`obs_period` shrinks alongside it. Without that shrink, faster obstacles would be
-spaced further apart on screen and the game would get *easier* as it sped up.
-The falling objects are not ramped — they keep the coin game's constants.
+The floor speeds up as the clock runs down, in four 24-second tiers. The ramp
+depends on the chosen difficulty: **EASY** stays at 1 px/frame with a fixed
+210-frame gap, **NORMAL** rises 1 → 2 px/frame with the gap shrinking 180 → 150,
+**HARD** rises 2 → 3 px/frame with the gap shrinking 150 → 114. Each tier
+tightens the gap as well as the speed — without that shrink, faster obstacles
+would be spaced further apart on screen and the game would get *easier* as it
+sped up. The falling objects are not ramped — they keep the coin game's
+constants.
 
 Object effects:
 
@@ -243,7 +253,7 @@ Score clamps to the displayable BCD range, 0 to 999.
 - Scaling: 2x pixel replication
 - Initial x: 288, speed 8 px/frame (unchanged from the coin game)
 - y: variable, `GROUND_Y` = 352 when standing, driven by gravity and jumping
-- Movement: left / right, plus jump / double jump
+- Movement: left / right, plus jump / triple jump (two mid-air jumps)
 - Facing direction uses right-facing source art; facing left mirrors the sprite address
 - Vertical state is 8.4 fixed point (16 units = 1 pixel) so gravity can be
   gentler than 1 px/frame; `player_y` is just the top 9 bits
@@ -275,11 +285,13 @@ Two separate kinds of thing live in the play field.
 **Ground obstacles** (new):
 
 - Maximum active: 3
-- Same 32 x 32 display size, drawn from **atlas slot 7**
-- Fixed at `OBS_Y` = 384 so they rest on the floor line at 416
-- Motion: slide right-to-left at 4 px/frame rising to 7 as the clock runs down
-- Spawn period: 95 frames at the start, down to 58
-- Tripping on one costs `OBS_PENALTY` (5) and shatters it; during Ember Dash it
+- Same 32 x 32 display size, drawn from **atlas slots 7-11** (the button art:
+  fox / orb / blue / red / red, matching gain vs loss)
+- Fixed at `OBS_Y` = 384 so they rest on the floor line at 416; the tall
+  variant stretches to 32 x 64 and only spawns on HARD
+- Motion: slide right-to-left at 1-3 px/frame, ramped per difficulty (see above)
+- Spawn period: 210 frames (EASY), 180 → 150 (NORMAL), 150 → 114 (HARD)
+- Tripping on one costs `OBS_PENALTY` (2) and shatters it; during Ember Dash it
   pays `OBS_BURN_BONUS` (+1) instead
 
 Because obstacles never move vertically, their top and bottom edges are
@@ -413,19 +425,26 @@ Current UI behavior:
 
 ### `res_overlay`
 
-Receives the UI stream and overlays the game-over result panel.
+Receives the UI stream and overlays the result panel and the menu screens.
 
 Content:
 
 ```text
-TIME UP
+TIME UP          (game over)
 SCORE 123
 BEST  456
+
+(menu)   the title line shows the selected difficulty / skill word, with
+         three option boxes underneath and the chosen one lit
+
+(how-to) LEFT OR RIGHT TO MOVE, PRESS JUMP WHEN READY, etc.
+
+(countdown)  GET READY + a big 5 -> 1 digit, one per second
 ```
 
-All glyphs come from a shared 6x12 font ROM (`src/assets/res_font.mem`) holding the
-digits 0-9, a blank, and the letters `B C E I M O P R S T U`, scaled by power-of-2
-pixel replication (title/value x4 -> 24x48, labels x2 -> 12x24).
+All glyphs come from a shared 6x12 font ROM (`src/assets/res_font.mem`) holding
+the digits 0-9, a blank, and `A-Z`, scaled by power-of-2 pixel replication
+(title/value x4 -> 24x48, labels x2 -> 12x24, the countdown digit x8 -> 48x96).
 
 It is a combinational overlay layer with no frame counter. Define `RES_OVERLAY_DIM`
 at compile time to dim pixels outside the panel; leave it undefined for no dimming.
@@ -575,7 +594,7 @@ marks a lit pixel) into the 1-bit font ROMs used by the text layers:
 
 ```text
 font.mem      digits 0-9 only          (used by ui_layer)
-res_font.mem  digits + space + B C E I M O P R S T U   (used by res_overlay)
+res_font.mem  digits 0-9 + space + A-Z   (used by res_overlay)
 ```
 
 Run from PowerShell:
@@ -650,6 +669,7 @@ Implemented:
 - cascaded BCD digit counters for UI timer, score, and high score outputs
 - skill base hooks with common `skill_slot` lifecycle and pass-through `spawn_postprocess`
 - button synchronization and debounce
+- start menu (difficulty → skill → how-to screen) and a 5 → 1 pre-game countdown, reusing the results panel
 - PNG to MEM conversion script (auto-size, RGB565/RGB323, animation frames)
 - Bitmap to MEM font-packing script
 - VS Code tasks for build/upload, asset conversion, packaging, and camera capture
@@ -657,10 +677,9 @@ Implemented:
 Open items:
 
 - tune spawn rate and fall speed
-- tune sprite art
-- decide whether to add an idle/start screen
+- tune sprite art (the floor ridge is still button art in atlas slots 7-11)
 - add more gameplay feedback if needed
-- watch Gowin resource usage (currently Logic ~66%, CLS ~84%, BSRAM 9/10 on GW1NSR-4C)
+- watch Gowin resource usage (currently LUT 4071, Register 1300, BSRAM 10/10 on GW1NSR-4C — BSRAM has no headroom left)
 
 ---
 
@@ -784,10 +803,10 @@ output [0:0]  out_axis_tuser;
 板上按鈕在實體接腳上為低電位有效（active-low），進到遊戲內部後轉為高電位有效（active-high）的按下狀態。
 
 ```text
-btn_left   pin 13
-btn_right  pin 17
-btn_start  pin 18
-btn_skill  pin 16
+btn_left   pin 13   向左移動
+btn_right  pin 17   跳躍（JUMP）
+btn_start  pin 15 ) 向右移動 -- game_core 將兩者 OR 在一起，
+btn_skill  pin 18 ) 第三顆按鈕接在哪個 spare pin 都行
 ```
 
 輸入路徑：
@@ -809,12 +828,16 @@ raw active-low button
 `game_ctrl` 目前的遊戲狀態：
 
 ```text
+0: 選單 -- 難度
+3: 選單 -- 技能
+4: 教學畫面（how-to）
+5: 倒數計時
 1: playing
 2: game over
 ```
 
-Reset 後直接從 `playing` 開始。狀態值 `0` 目前未使用。
-狀態暫存器保留在 `game_ctrl` 內部；繪製圖層只會收到較簡單的 `game_over` 訊號。
+Reset 後從難度選單開始。JUMP 依序通過難度 → 技能 → 教學畫面，接著 5 → 1 倒數後才開始遊戲。
+狀態暫存器保留在 `game_ctrl` 內部；繪製圖層只會收到 `game_over` 與 `menu_mode`／`count_val` 訊號。
 
 `btn_start` 會重新開始遊戲：
 
@@ -995,7 +1018,7 @@ SCORE 123
 BEST  456
 ```
 
-所有字形皆來自共用的 6x12 字型 ROM（`src/assets/res_font.mem`），內含數字 0-9、一個空白，以及字母 `B C E I M O P R S T U`，以 2 的次方倍像素複製縮放（標題／數值 x4 -> 24x48，標籤 x2 -> 12x24）。
+所有字形皆來自共用的 6x12 字型 ROM（`src/assets/res_font.mem`），內含數字 0-9、一個空白，以及 `A-Z`，以 2 的次方倍像素複製縮放（標題／數值 x4 -> 24x48，標籤 x2 -> 12x24，倒數數字 x8 -> 48x96）。
 
 它是一個組合邏輯的疊加圖層，沒有影格計數器。可在編譯時定義 `RES_OVERLAY_DIM` 以使面板外的像素變暗；不定義則不變暗。
 
@@ -1132,7 +1155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.vscode\png2mem.ps1 .\src\
 
 ```text
 font.mem      digits 0-9 only          (used by ui_layer)
-res_font.mem  digits + space + B C E I M O P R S T U   (used by res_overlay)
+res_font.mem  digits 0-9 + space + A-Z   (used by res_overlay)
 ```
 
 從 PowerShell 執行：
@@ -1217,4 +1240,4 @@ C:\Gowin\Gowin_V1.9.11.03_Education_x64
 - 調整圖素美術
 - 決定是否加入待機／開始畫面
 - 視需要增加更多遊戲回饋
-- 留意 Gowin 資源用量（目前 GW1NSR-4C 上 Logic ~66%、CLS ~84%、BSRAM 9/10）
+- 留意 Gowin 資源用量（目前 GW1NSR-4C 上 LUT 4071、Register 1300、BSRAM 10/10，BSRAM 已無餘裕）

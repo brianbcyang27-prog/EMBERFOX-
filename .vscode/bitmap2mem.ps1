@@ -12,13 +12,11 @@ param(
 #
 # Two outputs:
 #   font.mem     - digits 0-9 only (used by ui_layer, 160 lines). Unchanged.
-#   res_font.mem - shared digit+letter font (used by res_overlay, 512 lines):
-#                    index 0-9  = digits (reused from bitmap/0..9.txt)
-#                    index 10   = space (blank)
-#                    index 11-21= B C E I M O P R S T U
-#                    index 22-27= A D H L N Y   (added for the start menu:
-#                                 EASY / NORMAL / HARD and the skill names)
-#                    index 28-31= blank padding, still free for 4 more glyphs
+#   res_font.mem - shared digit+letter font (used by res_overlay, 768 lines):
+#                    index 0-9   = digits (reused from bitmap/0..9.txt)
+#                    index 10    = space (blank)
+#                    index 11-36 = A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
+#                    index 37-47 = blank padding, still free for 10 more glyphs
 
 $COLS = 6
 $ROWS = 12
@@ -38,13 +36,11 @@ if (!(Test-Path $InputPath -PathType Container)) {
 }
 
 # glyph index -> source basename in bitmap/, or $null for a blank glyph
-$resGlyphs = New-Object object[] 32
-for ($i = 0; $i -lt 32; $i++) { $resGlyphs[$i] = $null }
+$resGlyphs = New-Object object[] 48
+for ($i = 0; $i -lt 48; $i++) { $resGlyphs[$i] = $null }
 foreach ($d in 0..9) { $resGlyphs[$d] = "$d" }
-$letters = @('B','C','E','I','M','O','P','R','S','T','U')  # indices 11..21
+$letters = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z')  # indices 11..36
 for ($i = 0; $i -lt $letters.Count; $i++) { $resGlyphs[11 + $i] = $letters[$i] }
-$extra = @('A','D','H','L','N','Y')                        # indices 22..27
-for ($i = 0; $i -lt $extra.Count; $i++) { $resGlyphs[22 + $i] = $extra[$i] }
 
 # Return the 16 packed hex words for one glyph (blank if $basename is $null).
 function Pack-Glyph {

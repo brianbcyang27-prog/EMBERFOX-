@@ -5,8 +5,9 @@ param(
     [string[]]$Sprites8bit = @("player_right_32", "player_skill_32"),
     # Object sprites, in gameplay type order 0..6, packed (RGB323) into one atlas
     # ROM instead of one .mem each. Written to $ObjAtlasFile; not emitted singly.
-    # Ground obstacles reuse the "+1" (slot 0) and "-3" (slot 3) sprites.
-    [string[]]$ObjAtlas = @("obj_plus1_16", "obj_plus3_16", "obj_plus5_16", "obj_minus3_16", "obj_minus5_16", "obj_time_16", "obj_charge_16"),
+    # Slots 7-11 are the button sprites that slide along the ground as obstacles
+    # (gain -> fox/orb, loss -> blue/red buttons; see game_ctrl).
+    [string[]]$ObjAtlas = @("obj_plus1_16", "obj_plus3_16", "obj_plus5_16", "obj_minus3_16", "obj_minus5_16", "obj_time_16", "obj_charge_16", "obj_btn1_16", "obj_btn2_16", "obj_btn3_16", "obj_btn4_16", "obj_btn5_16"),
     [string]$ObjAtlasFile = "obj_atlas.mem",
     # Target sprite box size (N x N) is taken from the trailing "_<N>" in the
     # base name (e.g. obj_plus1_16 -> 16, player_right_32 -> 32); any-size source
@@ -198,8 +199,9 @@ foreach ($base in ($groups.Keys | Sort-Object)) {
     Write-Host "$base.{$(($frames | ForEach-Object { $_.Idx }) -join ',')} -> $base.mem ($($frames.Count) frames, $fmt)"
 }
 
-# Object atlas: concatenate the object sprites (RGB323) in type order 0..6 into a
+# Object atlas: concatenate the object sprites (RGB323) in type order into a
 # single .mem so obj_layer can read them from one ROM addressed by {type, y, x}.
+# Slots 0-6 = falling objects, 7-11 = ground-obstacle buttons.
 if ($ObjAtlas.Count -gt 0) {
     $atlasPath = Join-Path $OutputPath $ObjAtlasFile
     $writer = [System.IO.StreamWriter]::new($atlasPath, $false, [System.Text.Encoding]::ASCII)

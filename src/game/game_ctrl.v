@@ -13,8 +13,9 @@
 // falling ember, and up to clear an obstacle. Those two jobs pull against
 // each other, and that tension is the game.
 //
-// Scoring is untouched: same 7 object types, same values, same 60 second
-// clock, same high score.
+// Scoring keeps the same 7 object types and values. The clock now runs
+// 90 seconds, the fox can triple-jump, and the floor comes at you a little
+// slower - see the difficulty ramp below.
 //
 // Everything below runs once per video frame, on `frame_tick`.
 // ---------------------------------------------------------------------------
@@ -32,8 +33,8 @@ module game_ctrl #(
 	// ---- ground obstacles -----------------------------------------------
 	parameter MAX_OBS = 3,
 	parameter OBS_X_BITS = 11,
-	parameter OBS_SPEED_BASE = 3,     // px/frame at the start of a HARD run
-	parameter OBS_PENALTY = 3,        // heat lost for tripping on a loss obstacle
+	parameter OBS_SPEED_BASE = 2,     // px/frame at the start of a HARD run
+	parameter OBS_PENALTY = 2,        // heat lost for tripping on a loss obstacle
 	parameter OBS_BONUS = 1,          // heat gained for tripping on a gain obstacle
 	parameter OBS_BURN_BONUS = 1,     // heat gained instead, while Ember burns
 
@@ -47,10 +48,10 @@ module game_ctrl #(
 	parameter GRAVITY_DASH   = 7,     // gentler fall while Ember Dash is on
 	parameter JUMP_V         = 176,   // 11.0 px/frame launch -> ~114 px peak
 	parameter AIR_JUMP_V     = 140,   // 8.75 px/frame second jump
-	parameter AIR_JUMPS_MAX  = 1,     // 1 = double jump
+	parameter AIR_JUMPS_MAX  = 2,     // 2 = triple jump
 
 	// ---- scoring (unchanged from the coin game) --------------------------
-	parameter TIMER_START = 60,
+	parameter TIMER_START = 90,
 	parameter TIME_BONUS = 3,
 	parameter FPS = 60,
 	parameter SKILL_CHARGE_MAX = 5,
@@ -78,13 +79,14 @@ module game_ctrl #(
 
 	output [MAX_OBS            -1:0] obs_valid_bus,
 	output [MAX_OBS            -1:0] obs_tall_bus,
-	output [MAX_OBS            -1:0] obs_gain_bus,
+	output reg [MAX_OBS*3      -1:0] obs_btn_bus,
 	output reg [MAX_OBS*OBS_X_BITS-1:0] obs_xpos_bus,
 
 	// start-menu display
-	output [1:0] menu_mode,      // 0 = playing, 1 = game over, 2 = difficulty, 3 = skill
+	output [2:0] menu_mode,      // 0 = playing, 1 = game over, 2 = difficulty, 3 = skill, 4 = how-to, 5 = countdown
 	output [2:0] title_id,       // which word the result panel shows
 	output [1:0] menu_sel,       // which of the 3 options is highlighted
+	output [2:0] count_val,      // 5..1 during the pre-game countdown
 
 	output reg [7:0] timer,
 	output reg [9:0] score,
@@ -101,6 +103,8 @@ localparam S_MENU_DIFF  = 0;
 localparam S_PLAY       = 1;
 localparam S_OVER       = 2;
 localparam S_MENU_SKILL = 3;
+localparam S_HOWTO      = 4;     // how-to-play screen (JUMP to start the countdown)
+localparam S_COUNT      = 5;     // pre-game countdown 5..1, then S_PLAY
 
 localparam DIFF_EASY   = 0;
 localparam DIFF_NORMAL = 1;
@@ -148,14 +152,17 @@ reg [OBJ_Y_BITS   -1:0] obj_ypos [0:MAX_OBJ-1];
 reg [MAX_OBS-1:0]      obs_valid;
 reg [MAX_OBS-1:0]      obs_tall;      // 1 = the 64 px version
 reg [MAX_OBS-1:0]      obs_gain;      // 1 = pays points, 0 = costs points
+reg [2:0] obs_btn [0:MAX_OBS-1];      // 0..4 = button sprite, atlas slots 7..11
 reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
 
-reg [1:0] state;
+reg [2:0] state;
 reg [1:0] diff_sel;
 reg [1:0] skill_sel;
 reg [7:0] frame_cnt;
 reg [7:0] spawn_cnt;
 reg [7:0] obs_cnt;
+reg [2:0] count_val;     // 5..1 while the pre-game countdown runs
+reg [7:0] count_frames;  // 0..FPS-1, one second of the countdown
 reg btn_start_q;
 reg btn_jump_q;
 reg btn_move_q;
@@ -164,17 +171,18 @@ reg restart_armed;
 assign obj_valid_bus = obj_valid;
 assign obs_valid_bus = obs_valid;
 assign obs_tall_bus = obs_tall;
-assign obs_gain_bus = obs_gain;
 assign game_over = state == S_OVER;
 
-wire in_menu = (state == S_MENU_DIFF) || (state == S_MENU_SKILL);
+wire in_menu = (state == S_MENU_DIFF) || (state == S_MENU_SKILL) || (state == S_HOWTO);
 
 // ---------------------------------------------------------------------------
 // What the result panel shows
 // ---------------------------------------------------------------------------
-assign menu_mode = (state == S_OVER)       ? 2'd1 :
-				   (state == S_MENU_DIFF)  ? 2'd2 :
-				   (state == S_MENU_SKILL) ? 2'd3 : 2'd0;
+assign menu_mode = (state == S_OVER)       ? 3'd1 :
+				   (state == S_MENU_DIFF)  ? 3'd2 :
+				   (state == S_MENU_SKILL) ? 3'd3 :
+				   (state == S_HOWTO)      ? 3'd4 :
+				   (state == S_COUNT)      ? 3'd5 : 3'd0;
 
 assign menu_sel = (state == S_MENU_SKILL) ? skill_sel : diff_sel;
 
@@ -264,38 +272,41 @@ skill_slot #(
 // above its starting value.
 // ===========================================================================
 wire [7:0] elapsed = (timer >= TIMER_START) ? 8'd0 : (TIMER_START - timer);
-wire [1:0] speed_level = elapsed[5:4];        // 0,1,2,3 over a 60 second run
+// Four 24-second tiers over the 90 second run, so the ramp never resets.
+wire [1:0] speed_level = (elapsed >= 8'd72) ? 2'd3 :
+                         (elapsed >= 8'd48) ? 2'd2 :
+                         (elapsed >= 8'd24) ? 2'd1 : 2'd0;
 
 reg [3:0] obs_speed_raw;
 reg [7:0] obs_period;
 
 // The difficulty chosen on the start menu sets how fast the floor comes at you
-// and how often. HARD is the original tuning; EASY halves the ramp, slows the
-// obstacles, spreads them out, and never sends a tall one.
+// and how often. HARD is the original feel minus one speed step; EASY halves
+// the ramp, slows the obstacles, spreads them out, and never sends a tall one.
 always @(*) begin
 	case (diff_sel)
 		DIFF_EASY: begin
 			// Flat: no ramp at all, and obstacles are far enough apart that
 			// there is always time to line up under a falling ember.
-			obs_speed_raw = 4'd2;
-			obs_period    = 8'd190;
+			obs_speed_raw = 4'd1;
+			obs_period    = 8'd210;
 		end
 		DIFF_NORMAL: begin
-			obs_speed_raw = 4'd2 + {1'b0, speed_level[1]};   // 2,2,3,3
+			obs_speed_raw = 4'd1 + {1'b0, speed_level[1]};   // 1,1,2,2
 			case (speed_level)
-				2'd0:    obs_period = 8'd160;
-				2'd1:    obs_period = 8'd150;
-				2'd2:    obs_period = 8'd140;
-				default: obs_period = 8'd130;
+				2'd0:    obs_period = 8'd180;
+				2'd1:    obs_period = 8'd170;
+				2'd2:    obs_period = 8'd160;
+				default: obs_period = 8'd150;
 			endcase
 		end
 		default: begin                                       // HARD
-			obs_speed_raw = OBS_SPEED_BASE + {1'b0, speed_level[1]};  // 3,3,4,4
+			obs_speed_raw = OBS_SPEED_BASE + {1'b0, speed_level[1]};  // 2,2,3,3
 			case (speed_level)
-				2'd0:    obs_period = 8'd130;
-				2'd1:    obs_period = 8'd118;
-				2'd2:    obs_period = 8'd106;
-				default: obs_period = 8'd96;
+				2'd0:    obs_period = 8'd150;
+				2'd1:    obs_period = 8'd138;
+				2'd2:    obs_period = 8'd126;
+				default: obs_period = 8'd114;
 			endcase
 		end
 	endcase
@@ -709,6 +720,7 @@ always @(*) begin
 	obj_ypos_bus = 0;
 	obj_type_bus = 0;
 	obs_xpos_bus = 0;
+	obs_btn_bus = 0;
 
 	for (pack_i = 0; pack_i < MAX_OBJ; pack_i = pack_i + 1) begin
 		obj_lane_bus[pack_i*LANE_BITS     +: LANE_BITS]     = obj_lane[pack_i];
@@ -717,8 +729,10 @@ always @(*) begin
 		obj_type_bus[pack_i*OBJ_TYPE_BITS +: OBJ_TYPE_BITS] = obj_type[pack_i];
 	end
 
-	for (pack_i = 0; pack_i < MAX_OBS; pack_i = pack_i + 1)
+	for (pack_i = 0; pack_i < MAX_OBS; pack_i = pack_i + 1) begin
 		obs_xpos_bus[pack_i*OBS_X_BITS +: OBS_X_BITS] = obs_xpos[pack_i];
+		obs_btn_bus[pack_i*3           +: 3]          = obs_btn[pack_i];
+	end
 end
 
 // ===========================================================================
@@ -749,6 +763,8 @@ always @(posedge clk) begin
 		anim_cnt <= 0;
 		spawn_cnt <= SPAWN_PERIOD_FRAMES;
 		obs_cnt <= 8'd95;
+		count_val <= 5;
+		count_frames <= 0;
 		btn_start_q <= 0;
 		btn_jump_q <= 0;
 		btn_move_q <= 0;
@@ -759,8 +775,10 @@ always @(posedge clk) begin
 			obj_ypos[i] <= 0;
 			obj_type[i] <= 0;
 		end
-		for (i = 0; i < MAX_OBS; i = i + 1)
+		for (i = 0; i < MAX_OBS; i = i + 1) begin
 			obs_xpos[i] <= 0;
+			obs_btn[i] <= 0;
+		end
 	end else begin
 		btn_start_q <= restart_press;
 
@@ -781,6 +799,8 @@ always @(posedge clk) begin
 			obs_valid <= 0;
 			obs_tall <= 0;
 			obs_gain <= 0;
+			for (i = 0; i < MAX_OBS; i = i + 1)
+				obs_btn[i] <= 0;
 			// The jump button that got us here is still held down. Pretend it
 			// was already down last frame so it does not immediately confirm
 			// the menu as well.
@@ -789,39 +809,28 @@ always @(posedge clk) begin
 			// ---------------------------------------------------------------
 			// Start menu: LEFT / RIGHT pick, JUMP confirms.
 			//
-			// Page 1 chooses the difficulty, page 2 chooses the skill, then
-			// the run begins. One step per press (menu_move_rise), so holding
-			// the button does not race through the options.
+			// Page 1 chooses the difficulty, page 2 chooses the skill, then a
+			// how-to screen (JUMP again = "I'm ready"), then the countdown.
+			// One step per press (menu_move_rise), so holding the button does
+			// not race through the options.
 			// ---------------------------------------------------------------
 			if (menu_move_rise) begin
 				if (state == S_MENU_DIFF)
 					diff_sel <= menu_left ? (diff_sel == 2'd0 ? 2'd2 : diff_sel - 1'b1)
 										  : (diff_sel == 2'd2 ? 2'd0 : diff_sel + 1'b1);
-				else
+				else if (state == S_MENU_SKILL)
 					skill_sel <= menu_left ? (skill_sel == 2'd0 ? 2'd2 : skill_sel - 1'b1)
 										   : (skill_sel == 2'd2 ? 2'd0 : skill_sel + 1'b1);
 			end else if (btn_jump_rise) begin
 				if (state == S_MENU_DIFF) begin
 					state <= S_MENU_SKILL;
+				end else if (state == S_MENU_SKILL) begin
+					state <= S_HOWTO;
 				end else begin
-					// ---- start the run ----
-					player_x <= PLAYER_START_X;
-					player_dir <= 1;
-					player_y_fx <= GROUND_FX;
-					player_vy <= 0;
-					air_jumps <= AIR_JUMPS_MAX;
-				obj_valid <= 0;
-				obs_valid <= 0;
-				obs_tall <= 0;
-				obs_gain <= 0;
-				timer <= TIMER_START;
-				score <= 0;
-				skill_charge <= 0;
-					state <= S_PLAY;
-					frame_cnt <= 0;
-					anim_cnt <= 0;
-					spawn_cnt <= SPAWN_PERIOD_FRAMES;
-					obs_cnt <= 8'd120;
+					// ---- how-to screen -> start the countdown ----
+					count_val <= 5;
+					count_frames <= 0;
+					state <= S_COUNT;
 				end
 			end
 		end else begin
@@ -900,6 +909,11 @@ always @(posedge clk) begin
 					// already random and already changing - no second LFSR.
 					obs_tall[obs_free_idx] <= (diff_sel == DIFF_HARD) && spawn_data[10];
 					obs_gain[obs_free_idx] <= spawn_data[9];
+					// Gain obstacles show the fox (0) or orb (1); loss ones
+					// show the blue (2) or one of the red (3/4) buttons.
+					obs_btn[obs_free_idx] <= spawn_data[9] ? {2'd0, spawn_data[8]}
+														   : (spawn_data[7:6] == 2'd3 ? 3'd2
+																					 : {1'd0, spawn_data[7:6]} + 3'd2);
 				end
 
 				// ---- spawn countdowns ----
@@ -928,6 +942,40 @@ always @(posedge clk) begin
 					end
 				end else begin
 					frame_cnt <= frame_cnt + 1'b1;
+				end
+			end else if (state == S_COUNT) begin
+				// ---- pre-game countdown: 5,4,3,2,1, then play ----
+				if (frame_tick) begin
+					if (count_frames == FPS - 1) begin
+						count_frames <= 0;
+						if (count_val > 1) begin
+							count_val <= count_val - 1'b1;
+						end else begin
+							// ---- start the run ----
+							count_val <= 0;
+							player_x <= PLAYER_START_X;
+							player_dir <= 1;
+							player_y_fx <= GROUND_FX;
+							player_vy <= 0;
+							air_jumps <= AIR_JUMPS_MAX;
+							obj_valid <= 0;
+							obs_valid <= 0;
+							obs_tall <= 0;
+							obs_gain <= 0;
+							for (i = 0; i < MAX_OBS; i = i + 1)
+								obs_btn[i] <= 0;
+							timer <= TIMER_START;
+							score <= 0;
+							skill_charge <= 0;
+							state <= S_PLAY;
+							frame_cnt <= 0;
+							anim_cnt <= 0;
+							spawn_cnt <= SPAWN_PERIOD_FRAMES;
+							obs_cnt <= 8'd120;
+						end
+					end else begin
+						count_frames <= count_frames + 1'b1;
+					end
 				end
 			end
 		end

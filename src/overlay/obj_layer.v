@@ -43,7 +43,7 @@ module obj_layer #(
 
 	input [MAX_OBS            -1:0] obs_valid_bus,
 	input [MAX_OBS            -1:0] obs_tall_bus,
-	input [MAX_OBS            -1:0] obs_gain_bus,
+	input [MAX_OBS*3          -1:0] obs_btn_bus,
 	input [MAX_OBS*OBS_X_BITS -1:0] obs_xpos_bus,
 
 	// input stream from previous layer
@@ -70,8 +70,8 @@ localparam PLAYER_DEPTH      = 2048;
 localparam SKILL_ADDR_WIDTH  = 11;
 localparam SKILL_DEPTH       = 2048;
 
-localparam OBJ_ATLAS_ADDR_WIDTH = 11;      // {type(3), src_y(4), src_x(4)}
-localparam OBJ_ATLAS_DEPTH = 2048;         // 8 type slots x 256
+localparam OBJ_ATLAS_ADDR_WIDTH = 12;      // {type(4), src_y(4), src_x(4)}
+localparam OBJ_ATLAS_DEPTH = 4096;         // 16 type slots x 256
 localparam [7:0] TRANSPARENT_VAL = 8'h00;
 
 reg [`SVO_XYBITS-1:0] hcursor;
@@ -115,7 +115,7 @@ wire [5:0] obs_local_y_tall  = pixel_y[9:0] - `OBS_TALL_Y;
 integer obs_i;
 reg obs_hit;
 reg obs_hit_tall;
-reg obs_gain_d;
+reg [2:0] obs_btn_d;
 reg [4:0] obs_local_x;
 reg [OBS_X_BITS-1:0] scan_obs_x;
 reg [10:0] scan_obs_lx;
@@ -123,7 +123,7 @@ reg [10:0] scan_obs_lx;
 always @(*) begin
 	obs_hit = 0;
 	obs_hit_tall = 0;
-	obs_gain_d = 0;
+	obs_btn_d = 0;
 	obs_local_x = 0;
 	scan_obs_x = 0;
 	scan_obs_lx = 0;
@@ -138,7 +138,7 @@ always @(*) begin
 			scan_obs_lx = pixel_x_biased - scan_obs_x;
 			obs_hit = 1;
 			obs_hit_tall = obs_tall_bus[obs_i];
-			obs_gain_d = obs_gain_bus[obs_i];
+			obs_btn_d = obs_btn_bus[obs_i*3 +: 3];
 			obs_local_x = scan_obs_lx[4:0];
 		end
 	end
@@ -197,15 +197,13 @@ end
 
 // ---------------------------------------------------------------------------
 // One atlas ROM serves both. Falling objects use slots 0-6; ground obstacles
-// reuse the "+1" sprite (slot 0) when they pay you and the "-3" sprite (slot 3)
-// when they cost you. A falling object wins if both land on the same pixel
-// (it is in front). 16x16 art shown at 32x32: dropping the bottom bit repeats
-// every pixel twice.
+// use the button sprites in slots 7-11, chosen per-obstacle by obs_btn (0-4).
+// A falling object wins if both land on the same pixel (it is in front).
+// 16x16 art shown at 32x32: dropping the bottom bit repeats every pixel twice.
 // ---------------------------------------------------------------------------
 wire atlas_hit = obj_hit || obs_hit;
-wire [OBJ_TYPE_BITS-1:0] atlas_type = obj_hit ? obj_type_now
-											 : (obs_gain_d ? `OBS_GAIN_TYPE
-														   : `OBS_LOSS_TYPE);
+wire [3:0] atlas_type = obj_hit ? {1'b0, obj_type_now}
+								: (4'd7 + {1'b0, obs_btn_d});
 wire [4:0] atlas_local_x = obj_hit ? obj_local_x : obs_local_x;
 
 wire [3:0] atlas_src_x = atlas_local_x[4:1];
@@ -305,8 +303,9 @@ always @(posedge clk) begin
 	end
 end
 
-// Single atlas ROM (RGB323): 8 slots x 256 entries, addressed by
-// {type, src_y, src_x}. Slots 0-6 are the falling objects, slot 7 the obstacle.
+// Single atlas ROM (RGB323): 16 slots x 256 entries, addressed by
+// {type, src_y, src_x}. Slots 0-6 are the falling objects, 7-11 the buttons
+// that slide along the ground.
 rom #(
 	.DATA_WIDTH(8),
 	.ADDR_WIDTH(OBJ_ATLAS_ADDR_WIDTH),
