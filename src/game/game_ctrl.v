@@ -209,7 +209,6 @@ reg [MAX_OBJ-1:0]       obj_valid;
 
 reg [MAX_OBS-1:0]      obs_valid;
 reg [MAX_OBS-1:0]      obs_tall;      // 1 = the 64 px version
-reg [MAX_OBS-1:0]      obs_gain;      // 1 = pays points, 0 = costs points
 (* ramstyle = "distributed" *) reg [2:0] obs_btn [0:MAX_OBS-1];      // 0..4 = button sprite, atlas slots 7..11
 (* ramstyle = "distributed" *) reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
 
@@ -923,7 +922,6 @@ always @(posedge clk) begin
 		obj_valid <= 0;
 		obs_valid <= 0;
 		obs_tall <= 0;
-		obs_gain <= 0;
 		timer <= TIMER_START;
 		score <= 0;
 		high_score <= 0;
@@ -1200,7 +1198,6 @@ always @(posedge clk) begin
 						obj_valid <= 0;
 						obs_valid <= 0;
 						obs_tall <= 0;
-						obs_gain <= 0;
 						for (i = 0; i < MAX_OBS; i = i + 1)
 							obs_btn[i] <= 0;
 						timer <= TIMER_START;
