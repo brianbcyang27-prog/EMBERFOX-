@@ -777,6 +777,13 @@ always @(*) begin
 			score_delta_eff = score_delta;
 
 		// The multiplier applies to gains only, so a shard never gets worse.
+		//
+		// Keep this as a multiply. It infers a MULT9X9 DSP, and replacing it
+		// with a shift-and-add (`x<<1`, `(x<<1)+x`) to "save" the DSP was tried
+		// and made timing markedly WORSE - worst setup slack went from
+		// -0.136 ns to -2.368 ns, with a dozen more paths falling negative. The
+		// hard multiplier block is off the fabric critical path; the shift-add
+		// put another carry chain onto it.
 		if (score_delta > 0)
 			score_delta_eff = score_delta_eff * score_mult;
 	end

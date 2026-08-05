@@ -217,16 +217,23 @@ button also works if one is fitted.
 
 ### Health
 
-Ground ridges no longer touch the score. They are the health half of the game:
+Ground ridges no longer touch the score. They are the health half of the game,
+and they only ever take:
 
 ```text
-loss ridge   -1 HP   (nothing, while EMBER is running)
-gain ridge   +1 HP   (clamped at hp_start)
+EVERY ridge   -1 HP   (nothing, while EMBER is running)
+nothing on the floor ever gives HP back
 HP reaches 0 -> S_OVER immediately, with time still on the clock
 ```
 
 Falling objects move `score`; ridges move `hp`. Nothing crosses over, which is
 what makes it obvious mid-run which mistake was just made.
+
+There is no such thing as a friendly ridge. The `obs_gain` flag that used to
+make some of them heal is gone, and so are the sprite variants that advertised
+them: `obs_btn` now only picks the hazard buttons (atlas slots 9-11), because
+drawing a pickup-looking sprite on something that costs a life teaches the
+player the wrong thing.
 
 It also **closed timing**. `obj_ypos -> collision -> what it is worth -> score`
 was always the critical path; taking the ridge penalty adder and its 3-way
@@ -276,8 +283,8 @@ that arithmetic work.
 The opening of every run is a teaching window whose length is itself a
 difficulty setting. While it is open, frost shards are remapped to plain +1
 embers; on EASY and NORMAL the entire first tier (24 seconds) also sends only
-gain ridges, so nothing can punish a new player before they have learned to
-read the sprites.
+tall ridges, so the player meets the hoppable kind first. The floor gets no
+further grace - every ridge costs health from the first one onwards.
 
 Object effects:
 

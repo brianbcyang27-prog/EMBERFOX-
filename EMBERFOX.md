@@ -38,9 +38,14 @@ A catch-and-jump arcade game for the Tang Nano 4K, built on the HDMI Coin hardwa
 | The HP bar hitting zero | The cold got there first |
 
 **Two things fall, two things matter.** What comes out of the sky moves your
-**heat**; what comes along the ground moves your **health**. Catching is how you
-score, jumping is how you survive, and the two bars never trade against each
-other — which is what makes it obvious, mid-run, which mistake you just made.
+**heat**; what comes along the ground only ever takes your **health**. Catching
+is how you score, jumping is how you survive, and the two bars never trade
+against each other — which is what makes it obvious, mid-run, which mistake you
+just made.
+
+**Nothing on the floor is friendly.** Every ridge costs a point of health and
+none of them give any back, so the bar only falls. The one exception is the
+EMBER skill: for eight seconds ridges shatter against the fox for nothing.
 
 ---
 
@@ -276,8 +281,9 @@ up spaced further apart on screen and the game would get *easier* as it sped up.
 
 **Every run opens with a teaching window.** While it is open the spawn
 post-processor remaps frost shards to plain +1 embers. And on EASY and NORMAL
-the whole first tier (24 s) sends only gain ridges, so the start teaches before
-it punishes.
+the whole first tier (24 s) holds back the tall ridges, so the player meets the
+hoppable kind first. The floor itself gets no grace: every ridge costs health
+from the first one onwards.
 
 #### Why EASY does not use the slowest ridges
 

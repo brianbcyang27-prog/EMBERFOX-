@@ -58,7 +58,17 @@ module game_core #(
 // of rectangle comparators in BOTH game_ctrl and obj_layer, so these are the
 // main dials for logic usage on the FPGA.
 localparam MAX_OBJ = 6;      // falling embers / shards
-localparam MAX_OBS = 3;      // ground obstacles
+// Two, not three. A ridge lives for (OBS_SPAWN_X - OBS_KILL_X) / speed =
+// 672/speed frames, and the gap between spawns is obs_period, so the most that
+// can ever share the screen is ceil(672 / speed / obs_period):
+//
+//     EASY    336 / 240 = 1.4    NORMAL  336 / 180 = 1.9    HARD  168 / 105 = 1.6
+//
+// Never 3. Simulated on all three difficulties with the fox pinned at x=0 so
+// that no ridge is ever shattered early - the worst case for occupancy - and
+// the peak was 2 every time. The third slot was dead silicon carrying a full
+// set of rectangle comparators in BOTH game_ctrl and obj_layer.
+localparam MAX_OBS = 2;      // ground obstacles
 localparam LANE_BITS = 4;
 localparam XOFF_BITS = 4;
 localparam OBJ_TYPE_BITS = 3;
