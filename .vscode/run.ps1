@@ -47,8 +47,17 @@ if (-not (Test-Path $PROGRAMMER)) {
 
 $PROJECT_FILE_GW = $PROJECT_FILE -replace "\\", "/"
 
+# Place and route with timing-driven, higher-effort settings rather than the
+# defaults. The collision-to-score path in game_ctrl is long enough that the
+# result swings a lot on placement luck: measured on identical source, the
+# default settings gave -4.501 ns worst setup slack and these gave -2.676 ns.
+# They are set here rather than in the .gprj because gw_sh does not persist
+# set_option back to the project file.
 $TCL = @"
 open_project "$PROJECT_FILE_GW"
+set_option -timing_driven 1
+set_option -place_option 2
+set_option -route_option 1
 run all
 run close
 "@

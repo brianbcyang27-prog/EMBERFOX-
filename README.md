@@ -344,7 +344,7 @@ Two separate kinds of thing live in the play field.
 
 **Ground obstacles** (new):
 
-- Maximum active: 3
+- Maximum active: 2 (sized to measured worst-case occupancy; see below)
 - Same 32 x 32 display size, drawn from **atlas slots 7-11** (the button art:
   fox / orb / blue / red / red, matching gain vs loss)
 - Fixed at `OBS_Y` = 384 so they rest on the floor line at 416; the tall

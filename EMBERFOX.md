@@ -500,9 +500,23 @@ at all** — they live in the `case (diff_sel)` table in `game_ctrl.v`, and the
 hazard mix lives in `spawn_postprocess.v`. Those two blocks are the one place
 to touch if a mode still feels wrong.
 
-`MAX_OBJ` (6) and `MAX_OBS` (3) are in `game_core.v`. Each extra one costs a
+`MAX_OBJ` (6) and `MAX_OBS` (2) are in `game_core.v`. Each extra one costs a
 full set of comparators in **both** `game_ctrl` and `obj_layer`, so they are the
 main dials for logic usage.
+
+**Both are now sized to measured demand rather than guessed.** A ridge lives for
+`(OBS_SPAWN_X - OBS_KILL_X) / speed` = 672/speed frames and arrives every
+`obs_period` frames, so the most that can share the screen is
+
+```text
+EASY    336 / 240 = 1.4      NORMAL  336 / 180 = 1.9      HARD  168 / 105 = 1.6
+```
+
+— never three. Simulating all three difficulties with the fox pinned at `x = 0`,
+so no ridge is ever shattered early (the worst case for occupancy), the peak was
+**2 every time**. `MAX_OBS` was 3, so one slot was dead silicon carrying a full
+rectangle test in two modules. Falling objects measured the opposite way: 6 of 6
+in constant use, so `MAX_OBJ` cannot come down without dropping spawns.
 
 ---
 
