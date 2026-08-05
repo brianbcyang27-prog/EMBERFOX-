@@ -50,7 +50,9 @@ module game_core #(
 	output out_axis_tvalid,
 	input out_axis_tready,
 	output [SVO_BITS_PER_PIXEL-1:0] out_axis_tdata,
-	output [0:0] out_axis_tuser
+	output [0:0] out_axis_tuser,
+
+	output buzz
 );
 // How many things can be on screen at once. Every extra one costs a full set
 // of rectangle comparators in BOTH game_ctrl and obj_layer, so these are the
@@ -108,6 +110,14 @@ wire [2:0] skill_charge;
 wire [7:0] skill_timer;
 wire skill_on;
 wire game_over;
+wire [2:0] combo_mult;
+wire [9:0] shake_x;
+
+wire [4:0] sound_ev;
+wire sound_pulse;
+wire [1:0] over_phase;
+wire boss_valid;
+wire [OBS_X_BITS-1:0] boss_xpos;
 
 // The very first pixel of a frame is the game's clock: one tick = one step.
 assign frame_tick = bg_tvalid && bg_tready && bg_tuser[0];
@@ -160,8 +170,18 @@ game_ctrl #(
 	.skill_timer(skill_timer),
 	.skill_on(skill_on),
 	.game_over(game_over),
-	.count_val(count_val)
+	.combo_mult(combo_mult),
+	.count_val(count_val),
+	.sound_ev(sound_ev),
+	.sound_pulse(sound_pulse),
+	.over_phase(over_phase),
+	.shake_x(shake_x),
+	.boss_valid(boss_valid),
+	.boss_xpos(boss_xpos)
 );
+
+wire buzz;
+assign buzz = 1'b0;
 
 bg_layer #(
 	`SVO_PASS_PARAMS,
@@ -194,6 +214,9 @@ obj_layer #(
 	.player_dir(player_dir),
 	.player_frame(player_frame),
 	.skill_on(skill_on),
+	.shake_x(shake_x),
+	.boss_valid(boss_valid),
+	.boss_xpos(boss_xpos),
 
 	.obj_valid_bus(obj_valid_bus),
 	.obj_lane_bus(obj_lane_bus),
@@ -229,6 +252,7 @@ ui_layer #(
 	.high_score_bcd(high_score_bcd),
 	.skill_charge(skill_charge),
 	.skill_timer(skill_timer),
+	.combo_mult(combo_mult),
 	.game_over(game_over),
 	.btn_left(btn_left),
 	.btn_right(btn_move_right),
@@ -254,6 +278,7 @@ res_overlay #(
 	.title_id(title_id),
 	.menu_sel(menu_sel),
 	.count_val(count_val),
+	.over_phase(over_phase),
 	.score_bcd(score_bcd),
 	.high_score_bcd(high_score_bcd),
 

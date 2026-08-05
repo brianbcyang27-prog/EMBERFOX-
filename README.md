@@ -224,12 +224,18 @@ button also works if one is fitted.
 
 The floor speeds up as the clock runs down, in four 24-second tiers. The ramp
 depends on the chosen difficulty: **EASY** stays at 1 px/frame with a fixed
-210-frame gap, **NORMAL** rises 1 → 2 px/frame with the gap shrinking 180 → 150,
-**HARD** rises 2 → 3 px/frame with the gap shrinking 150 → 114. Each tier
+210-frame gap, **NORMAL** rises 1 → 2 px/frame with the gap shrinking 185 → 150,
+**HARD** rises 2 → 3 px/frame with the gap shrinking 160 → 114. Each tier
 tightens the gap as well as the speed — without that shrink, faster obstacles
 would be spaced further apart on screen and the game would get *easier* as it
 sped up. The falling objects are not ramped — they keep the coin game's
 constants.
+
+The opening of every run is a teaching window. For the first 5 seconds
+(`WARMUP_FRAMES = 300`) frost shards are remapped to plain +1 embers, and for
+the entire first tier (24 seconds) every ridge is a gain one and even HARD
+sends no tall ridges, so nothing can punish a new player before they have
+learned to read the sprites. The first ridge also spawns later than it used to.
 
 Object effects:
 
@@ -289,7 +295,7 @@ Two separate kinds of thing live in the play field.
 - Fixed at `OBS_Y` = 384 so they rest on the floor line at 416; the tall
   variant stretches to 32 x 64 and only spawns on HARD
 - Motion: slide right-to-left at 1-3 px/frame, ramped per difficulty (see above)
-- Spawn period: 210 frames (EASY), 180 → 150 (NORMAL), 150 → 114 (HARD)
+- Spawn period: 210 frames (EASY), 185 → 150 (NORMAL), 160 → 114 (HARD)
 - Tripping on one costs `OBS_PENALTY` (2) and shatters it; during Ember Dash it
   pays `OBS_BURN_BONUS` (+1) instead
 

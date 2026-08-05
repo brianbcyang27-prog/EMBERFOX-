@@ -45,13 +45,13 @@ module svo_enc #( `SVO_DEFAULT_PARAMS ) (
 	reg [`SVO_XYBITS-1:0] hcursor;
 	reg [`SVO_XYBITS-1:0] vcursor;
 
-	reg [3:0] ctrl_fifo [0:3];
+	(* ramstyle = "distributed" *) reg [3:0] ctrl_fifo [0:3];
 	reg [1:0] ctrl_fifo_wraddr, ctrl_fifo_rdaddr;
 
-	reg [SVO_BITS_PER_PIXEL:0] pixel_fifo [0:7];
+	(* ramstyle = "distributed" *) reg [SVO_BITS_PER_PIXEL:0] pixel_fifo [0:7];
 	reg [2:0] pixel_fifo_wraddr, pixel_fifo_rdaddr;
 
-	reg [SVO_BITS_PER_PIXEL+3:0] out_fifo [0:3];
+	(* ramstyle = "distributed" *) reg [SVO_BITS_PER_PIXEL+3:0] out_fifo [0:3];
 	reg [1:0] out_fifo_wraddr, out_fifo_rdaddr;
 
 	wire [1:0]  ctrl_fifo_fill =  ctrl_fifo_wraddr -  ctrl_fifo_rdaddr;

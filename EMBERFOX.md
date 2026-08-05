@@ -233,12 +233,17 @@ that already existed:
 | | Ridge speed | Frames between ridges | Tall ridges? |
 |---|---|---|---|
 | **EASY** | 1 (flat, no ramp) | 210 | no |
-| **NORMAL** | 1 → 2 | 180 → 150 | no |
-| **HARD** | 2 → 3 | 150 → 114 | yes |
+| **NORMAL** | 1 → 2 | 185 → 150 | no |
+| **HARD** | 2 → 3 | 160 → 114 | yes |
 
 The gap has to **shrink** as speed grows. If it did not, faster ridges would end
 up spaced further apart on screen and the game would get *easier* as it sped up.
 Falling objects are never ramped — they keep the coin game's constants.
+
+**Every run opens with a teaching window.** For the first 5 seconds
+(`WARMUP_FRAMES = 300`) the spawn post-processor remaps frost shards to plain
++1 embers. And for the whole first tier (24 s) every ridge is a gain one and
+HARD sends no tall ones, so the start teaches before it punishes.
 
 ### 4.10 Three bugs worth showing
 
@@ -363,6 +368,7 @@ All at the top of `game_ctrl.v` unless noted:
 | `PLAYER_SPEED_START` | 8 | Sideways speed *(coin game value)* |
 | `SKILL_DURATION` | 8 | Skill length, seconds |
 | `SKILL_CHARGE_MAX` | 5 | Crystals needed to fire a skill |
+| `WARMUP_FRAMES` | 300 | Hazard-free opening of a run, frames (5 s) |
 | `TIMER_START` | 90 | Run length, seconds |
 | `LURE_PAD` *(game_defs.vh)* | 28 | How far LURE reaches |
 | `OBS_Y` / `OBS_TALL_Y` *(game_defs.vh)* | 384 / 352 | Ridge heights |

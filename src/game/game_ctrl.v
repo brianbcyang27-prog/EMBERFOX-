@@ -17,6 +17,10 @@
 // 90 seconds, the fox can triple-jump, and the floor comes at you a little
 // slower - see the difficulty ramp below.
 //
+// Every run opens with a short teaching window: WARMUP_FRAMES of hazard-free
+// falling objects, and the whole first ramp tier (24 s) never sends a ridge
+// that costs points. The start shows you how to play before it punishes you.
+//
 // Everything below runs once per video frame, on `frame_tick`.
 // ---------------------------------------------------------------------------
 
@@ -38,6 +42,14 @@ module game_ctrl #(
 	parameter OBS_BONUS = 1,          // heat gained for tripping on a gain obstacle
 	parameter OBS_BURN_BONUS = 1,     // heat gained instead, while Ember burns
 
+	// ---- boss obstacle --------------------------------------------------
+	// Rare wide ridge: 64px wide, 96px tall (a full jump clears it), spawns
+	// once per minute, gives BOSS_SCORE pts when cleared. Geometry (BOSS_W /
+	// BOSS_H / BOSS_TOP) lives in game_defs.vh so rendering can share it.
+	parameter BOSS_ENABLE = 1,
+	parameter BOSS_SPAWN_FRAMES = 3600,  // once per 60s at 60fps
+	parameter BOSS_SCORE = 50,
+
 	// ---- moving and jumping ---------------------------------------------
 	// Vertical numbers are 8.4 fixed point: 16 units = 1 screen pixel. Using
 	// fractions lets gravity be gentler than "1 pixel per frame", which is the
@@ -54,6 +66,10 @@ module game_ctrl #(
 	parameter TIMER_START = 90,
 	parameter TIME_BONUS = 3,
 	parameter FPS = 60,
+	// First WARMUP_FRAMES of a run are pure teaching: falling frost shards are
+	// remapped to +1 embers (see spawn_postprocess) and every ridge is a gain
+	// one, so a new player is never punished before they can read the sprites.
+	parameter WARMUP_FRAMES = 300,   // 300 frames = 5 s at 60 fps
 	parameter SKILL_CHARGE_MAX = 5,
 	parameter SKILL_ENABLE = 1,
 	parameter SKILL_DURATION = 8
@@ -93,10 +109,25 @@ module game_ctrl #(
 	output [11:0] timer_bcd,
 	output [11:0] score_bcd,
 	output [11:0] high_score_bcd,
-	output reg [2:0] skill_charge,
-	output [7:0] skill_timer,
-	output skill_on,
-	output game_over
+output reg [2:0] skill_charge,
+output [7:0] skill_timer,
+output skill_on,
+output game_over,
+output [2:0] combo_mult,
+
+// Sound event bus: sound_pulse (one clock) + event id, consumed by the
+// square-wave engine in game_core. 0 = silence. The id is *encoded*: bits
+// [4:3] = duration class, bits [2:0] = pitch class (see sound_engine.v).
+// Several events share an id on purpose - the id only needs to be non-zero.
+output reg [4:0] sound_ev,
+output reg sound_pulse,
+output shake_x,
+output boss_valid,
+output [OBS_X_BITS-1:0] boss_xpos,
+
+// Results-screen reveal: 0 = score only, 1 = best score has popped in,
+// 2 = PLAY AGAIN / LEAVE choice is up. Drives res_overlay.
+output reg [1:0] over_phase
 );
 // State 0 was unused in the coin game; it is now the start menu.
 localparam S_MENU_DIFF  = 0;
@@ -144,16 +175,22 @@ localparam [9:0] PLAYER_MAX_X = SCREEN_W - `PLAYER_W;
 // several things can be removed in the same frame without any special case.
 // ===========================================================================
 reg [MAX_OBJ-1:0]       obj_valid;
-reg [LANE_BITS    -1:0] obj_lane [0:MAX_OBJ-1];
-reg [XOFF_BITS    -1:0] obj_xoff [0:MAX_OBJ-1];
-reg [OBJ_TYPE_BITS-1:0] obj_type [0:MAX_OBJ-1];
-reg [OBJ_Y_BITS   -1:0] obj_ypos [0:MAX_OBJ-1];
+(* ramstyle = "distributed" *) reg [LANE_BITS    -1:0] obj_lane [0:MAX_OBJ-1];
+(* ramstyle = "distributed" *) reg [XOFF_BITS    -1:0] obj_xoff [0:MAX_OBJ-1];
+(* ramstyle = "distributed" *) reg [OBJ_TYPE_BITS-1:0] obj_type [0:MAX_OBJ-1];
+(* ramstyle = "distributed" *) reg [OBJ_Y_BITS   -1:0] obj_ypos [0:MAX_OBJ-1];
 
 reg [MAX_OBS-1:0]      obs_valid;
 reg [MAX_OBS-1:0]      obs_tall;      // 1 = the 64 px version
 reg [MAX_OBS-1:0]      obs_gain;      // 1 = pays points, 0 = costs points
-reg [2:0] obs_btn [0:MAX_OBS-1];      // 0..4 = button sprite, atlas slots 7..11
-reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
+(* ramstyle = "distributed" *) reg [2:0] obs_btn [0:MAX_OBS-1];      // 0..4 = button sprite, atlas slots 7..11
+(* ramstyle = "distributed" *) reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
+
+// Boss obstacle (single instance)
+reg boss_valid;
+reg [OBS_X_BITS-1:0] boss_xpos;
+reg [11:0] boss_cnt;
+reg boss_cleared;  // set when player successfully jumps over boss
 
 reg [2:0] state;
 reg [1:0] diff_sel;
@@ -163,10 +200,26 @@ reg [7:0] spawn_cnt;
 reg [7:0] obs_cnt;
 reg [2:0] count_val;     // 5..1 while the pre-game countdown runs
 reg [7:0] count_frames;  // 0..FPS-1, one second of the countdown
-reg btn_start_q;
+reg [11:0] warmup_cnt;   // frames since the run began; < WARMUP_FRAMES = teaching
 reg btn_jump_q;
 reg btn_move_q;
-reg restart_armed;
+
+// Combo multiplier: increments on consecutive catches, resets on miss/trip
+reg [3:0] combo_cnt;      // 0..15
+reg [2:0] combo_mult;     // 1..3 (1x, 2x, 3x)
+
+// Screen shake: 2-frame camera offset when tripping
+reg [1:0] shake_cnt;      // 0..2
+reg shake_dir;            // 0 = left, 1 = right
+
+// Results-screen reveal. over_cnt counts frames since the run ended; the
+// phase triggers are bit-tests, not compares, to keep the gate count down:
+// bit6 (frame 64) = the best score pops in, bit7 (frame 128) = the
+// PLAY AGAIN / LEAVE choice appears. over_sel is the choice: 0 = play again
+// (default), 1 = leave to the menu.
+reg [6:0] over_cnt;
+reg [1:0] over_phase;
+reg over_sel;
 
 assign obj_valid_bus = obj_valid;
 assign obs_valid_bus = obs_valid;
@@ -184,7 +237,9 @@ assign menu_mode = (state == S_OVER)       ? 3'd1 :
 				   (state == S_HOWTO)      ? 3'd4 :
 				   (state == S_COUNT)      ? 3'd5 : 3'd0;
 
-assign menu_sel = (state == S_MENU_SKILL) ? skill_sel : diff_sel;
+assign menu_sel = (state == S_MENU_SKILL) ? skill_sel :
+				  (state == S_OVER)       ? {1'b0, over_sel} :
+											 diff_sel;
 
 assign title_id =
 	(state == S_MENU_DIFF)  ? (diff_sel == DIFF_EASY   ? TITLE_EASY  :
@@ -202,17 +257,12 @@ assign title_id =
 //                LEFT + RIGHT together = use the skill. Holding both already
 //                cancels out as movement (see the mover), so it was free.
 //   in the menu  LEFT / RIGHT change the option, JUMP confirms it
-//   results      JUMP = back to the menu
-//
-// `restart_armed` is why the run does not leave the results screen the instant
-// it ends: if the clock runs out while the player is holding jump - mid-leap,
-// which happens constantly - the button is already down. So the player has to
-// LET GO once before jump counts.
+//   results      once the choice appears, LEFT / RIGHT pick PLAY AGAIN or
+//                LEAVE and JUMP confirms. The choice is gated on over_phase,
+//                and btn_jump_rise is a one-shot per press, so the jump that
+//                ended the run can never confirm the results screen early.
 // ---------------------------------------------------------------------------
 wire skill_btn = btn_left && btn_right;
-wire restart_press = btn_jump && game_over && restart_armed;
-
-wire btn_start_rise = restart_press && !btn_start_q;
 wire btn_jump_rise  = btn_jump && !btn_jump_q;
 wire skill_btn_active = skill_btn && state == S_PLAY;
 wire skill_start;
@@ -223,18 +273,18 @@ wire menu_left  = btn_left && !btn_right;
 wire menu_right = btn_right && !btn_left;
 wire menu_move_rise = (menu_left || menu_right) && !btn_move_q;
 
-always @(posedge clk) begin
-	if (!resetn)
-		restart_armed <= 1'b0;
-	else if (!game_over)
-		restart_armed <= 1'b0;      // during a run this means nothing
-	else if (!btn_jump)
-		restart_armed <= 1'b1;      // let go on the results screen -> armed
-end
-
 wire game_step = frame_tick && state == S_PLAY;
+
+// Stop the skill timer the first frame the run ends (one pulse, because
+// The countdown start clears the charge on the next run; the restart pulses
+// on every results-screen frame keep the dash timer pinned at 0 so a dash
+// that was active when time ran out cannot linger behind the panel.
+wire skill_restart = game_over && frame_tick;
 wire timer_tick = frame_cnt == FPS - 1;
 wire sec_tick = game_step && timer_tick;
+
+// True while the run's opening teaching window is still open.
+wire warmup = warmup_cnt < WARMUP_FRAMES;
 
 // ===========================================================================
 // Ember Dash (the skill)
@@ -255,7 +305,7 @@ skill_slot #(
 	.clk(clk),
 	.resetn(resetn),
 	.sec_tick(sec_tick),
-	.restart(btn_start_rise),
+	.restart(skill_restart),
 	.btn_skill(skill_btn_active),
 	.skill_charge(skill_charge),
 	.skill_timer(skill_timer),
@@ -294,8 +344,8 @@ always @(*) begin
 		DIFF_NORMAL: begin
 			obs_speed_raw = 4'd1 + {1'b0, speed_level[1]};   // 1,1,2,2
 			case (speed_level)
-				2'd0:    obs_period = 8'd180;
-				2'd1:    obs_period = 8'd170;
+				2'd0:    obs_period = 8'd185;
+				2'd1:    obs_period = 8'd175;
 				2'd2:    obs_period = 8'd160;
 				default: obs_period = 8'd150;
 			endcase
@@ -303,9 +353,9 @@ always @(*) begin
 		default: begin                                       // HARD
 			obs_speed_raw = OBS_SPEED_BASE + {1'b0, speed_level[1]};  // 2,2,3,3
 			case (speed_level)
-				2'd0:    obs_period = 8'd150;
-				2'd1:    obs_period = 8'd138;
-				2'd2:    obs_period = 8'd126;
+				2'd0:    obs_period = 8'd160;
+				2'd1:    obs_period = 8'd145;
+				2'd2:    obs_period = 8'd128;
 				default: obs_period = 8'd114;
 			endcase
 		end
@@ -394,6 +444,7 @@ spawn_postprocess #(
 	.clk(clk),
 	.resetn(resetn),
 	.fire(spawn_pop),
+	.warmup(warmup),
 	.raw_lane(spawn_lane_raw),
 	.raw_xoff(spawn_xoff_raw),
 	.raw_type(spawn_type_raw),
@@ -568,6 +619,7 @@ end
 // per-obstacle.
 wire feet_below_short = hit_player_b > `OBS_Y;
 wire feet_below_tall  = hit_player_b > `OBS_TALL_Y;
+wire feet_below_boss  = hit_player_b > `BOSS_TOP;
 
 integer obs_i;
 reg obs_hit_valid;
@@ -593,6 +645,26 @@ always @(*) begin
 	end
 end
 
+// ---- boss obstacle collision ----
+reg boss_hit_valid;
+reg [10:0] trip_boss_x;
+
+always @(*) begin
+	boss_hit_valid = 0;
+	trip_boss_x = 0;
+
+	if (boss_valid) begin
+		// un-bias into screen space
+		trip_boss_x = boss_xpos - `OBS_X_BIAS;
+
+		if (feet_below_boss &&  // the boss top (320) sits above OBS_TALL_Y (352)
+			trip_l < trip_boss_x + `BOSS_W &&
+			trip_r > trip_boss_x) begin
+			boss_hit_valid = 1;
+		end
+	end
+end
+
 // ===========================================================================
 // What a collision does to the score
 //
@@ -606,7 +678,7 @@ reg signed [7:0] score_delta;
 reg signed [7:0] score_delta_eff;
 reg signed [11:0] score_sum;
 
-wire any_hit = hit_valid || obs_hit_valid;
+wire any_hit = hit_valid || obs_hit_valid || boss_hit_valid;
 reg [9:0] high_score;
 
 wire hit_is_hazard = (obj_type[hit_idx] == TYPE_MINUS3) ||
@@ -643,6 +715,11 @@ always @(*) begin
 			score_delta_eff = OBS_BURN_BONUS;
 		else
 			score_delta_eff = score_delta;
+
+		// Combo multiplier: only for positive catches
+		if (score_delta > 0) begin
+			score_delta_eff = score_delta_eff * combo_mult;
+		end
 	end
 
 	// --- tripped on a ground obstacle ---
@@ -654,6 +731,18 @@ always @(*) begin
 		else
 			score_delta_eff = score_delta_eff - OBS_PENALTY;
 	end
+
+	// --- boss obstacle ---
+	if (boss_hit_valid) begin
+		if (skill_ember)
+			score_delta_eff = score_delta_eff + OBS_BURN_BONUS;
+		else
+			score_delta_eff = score_delta_eff - OBS_PENALTY;
+	end
+
+	// --- boss cleared (jumped over) ---
+	// When boss goes off-screen, award points if player didn't trip on it
+	// This is handled in the sequential block when boss_xpos <= OBS_KILL_X
 
 	score_sum = $signed({2'b00, score}) + score_delta_eff;
 	if (score_sum < 0)
@@ -702,11 +791,11 @@ bin2bcd #(
 	.bcd(high_score_bcd)
 );
 
-bin2bcd #(
-	.BIN_BITS(8)
+bin2bcd7 #(
+	.BIN_BITS(7)
 ) u_timer_bcd (
-	.bin(timer),
-	.bcd(timer_bcd)
+	.bin(timer[6:0]),
+	.bcd(timer_bcd[7:0])
 );
 
 // ===========================================================================
@@ -763,12 +852,15 @@ always @(posedge clk) begin
 		frame_cnt <= 0;
 		anim_cnt <= 0;
 		spawn_cnt <= SPAWN_PERIOD_FRAMES;
-		obs_cnt <= 8'd95;
-		count_val <= 5;
+		obs_cnt <= 8'd150;
+		count_val <= 3;
 		count_frames <= 0;
-		btn_start_q <= 0;
+		warmup_cnt <= 0;
 		btn_jump_q <= 0;
 		btn_move_q <= 0;
+		over_cnt <= 0;
+		over_phase <= 0;
+		over_sel <= 0;
 
 		for (i = 0; i < MAX_OBJ; i = i + 1) begin
 			obj_lane[i] <= 0;
@@ -781,8 +873,6 @@ always @(posedge clk) begin
 			obs_btn[i] <= 0;
 		end
 	end else begin
-		btn_start_q <= restart_press;
-
 		// Sample the buttons once per FRAME, not once per clock. The game only
 		// advances on frame_tick, so a one-clock-wide rising edge would almost
 		// always land between two frames and be lost - about 9 out of 10
@@ -792,29 +882,15 @@ always @(posedge clk) begin
 			btn_move_q <= menu_left || menu_right;
 		end
 
-		if (btn_start_rise) begin
-			// Results screen -> back to the start menu, so the difficulty and
-			// skill can be changed before the next run. The high score is kept.
-			state <= S_MENU_DIFF;
-			obj_valid <= 0;
-			obs_valid <= 0;
-			obs_tall <= 0;
-			obs_gain <= 0;
-			for (i = 0; i < MAX_OBS; i = i + 1)
-				obs_btn[i] <= 0;
-			// The jump button that got us here is still held down. Pretend it
-			// was already down last frame so it does not immediately confirm
-			// the menu as well.
-			btn_jump_q <= 1'b1;
-		end else if (frame_tick && in_menu) begin
+		if (frame_tick && in_menu) begin
 			// ---------------------------------------------------------------
 			// Start sequence: full-screen how-to page, then the menus.
 			// LEFT / RIGHT pick, JUMP confirms.
 			//
 			// Power-on shows the how-to page first (JUMP = "got it", then
 			// page 1 difficulty, page 2 skill, then the countdown). Play-again
-			// from the results screen goes straight to the difficulty menu, so
-			// the instructions never repeat.
+			// from the results screen goes straight to the countdown, so the
+			// instructions never repeat.
 			// One step per press (menu_move_rise), so holding the button does
 			// not race through the options.
 			// ---------------------------------------------------------------
@@ -833,7 +909,7 @@ always @(posedge clk) begin
 					state <= S_MENU_SKILL;
 				end else begin
 					// ---- skill menu -> start the countdown ----
-					count_val <= 5;
+					count_val <= 3;
 					count_frames <= 0;
 					state <= S_COUNT;
 				end
@@ -842,6 +918,9 @@ always @(posedge clk) begin
 			if (game_step) begin
 
 				anim_cnt <= anim_cnt + 1'b1;
+
+				if (warmup)
+					warmup_cnt <= warmup_cnt + 1'b1;
 
 				// ---- move sideways (unchanged from the coin game) ----
 				// Holding both cancels out, which is what frees LEFT+RIGHT to
@@ -870,6 +949,35 @@ always @(posedge clk) begin
 					score <= next_score;
 					timer <= next_timer;
 					skill_charge <= next_charge;
+				end
+
+				// ---- combo update: increment on catch, reset on miss/trip ----
+				if (hit_valid) begin
+					// Caught a positive object - increment combo
+					if (score_delta > 0) begin
+						if (combo_cnt < 4'd15)
+							combo_cnt <= combo_cnt + 1'b1;
+						if (combo_cnt >= 4'd10 && combo_mult < 3'd3)
+							combo_mult <= combo_mult + 1'b1;
+						else if (combo_cnt >= 4'd5 && combo_mult < 3'd2)
+							combo_mult <= combo_mult + 1'b1;
+					end else begin
+						// Caught a negative object - reset combo
+						combo_cnt <= 0;
+						combo_mult <= 3'd1;
+					end
+				end else if (obs_hit_valid || boss_hit_valid) begin
+					// Tripped on a ridge or the boss - reset combo
+					combo_cnt <= 0;
+					combo_mult <= 3'd1;
+				end
+
+				// Also reset combo when an object hits the floor (missed)
+				for (i = 0; i < MAX_OBJ; i = i + 1) begin
+					if (obj_valid[i] && obj_ypos[i] >= OBJ_GROUND_Y) begin
+						combo_cnt <= 0;
+						combo_mult <= 3'd1;
+					end
 				end
 
 				// ---- falling objects: fall, be caught, or hit the floor ----
@@ -912,14 +1020,46 @@ always @(posedge clk) begin
 					obs_xpos[obs_free_idx] <= `OBS_SPAWN_X;
 					// The bits come from the head of the spawn FIFO, which is
 					// already random and already changing - no second LFSR.
-					obs_tall[obs_free_idx] <= (diff_sel == DIFF_HARD) && spawn_data[10];
-					obs_gain[obs_free_idx] <= spawn_data[9];
+					//
+					// Tier 0 (the first 24 s) is the teaching tier: every
+					// ridge is a gain one and even HARD sends no tall ones, so
+					// the player learns to jump before anything can hurt them.
+					obs_tall[obs_free_idx] <= (diff_sel == DIFF_HARD) && (speed_level != 0) && spawn_data[10];
+					obs_gain[obs_free_idx] <= (speed_level == 0) ? 1'b1 : spawn_data[9];
 					// Gain obstacles show the fox (0) or orb (1); loss ones
 					// show the blue (2) or one of the red (3/4) buttons.
 					obs_btn[obs_free_idx] <= spawn_data[9] ? {2'd0, spawn_data[8]}
 														   : (spawn_data[7:6] == 2'd3 ? 3'd2
 																					 : {1'd0, spawn_data[7:6]} + 3'd2);
 				end
+
+				// ---- boss obstacle ----
+				// The countdown only ticks while no boss is on screen, so a
+				// spawn lands ~60s after the previous boss left the screen.
+				if (BOSS_ENABLE) begin
+					if (boss_valid) begin
+						if (boss_xpos <= `OBS_KILL_X) begin
+							boss_valid <= 1'b0;
+							boss_cnt <= BOSS_SPAWN_FRAMES;   // start the long gap
+							// Award boss bonus if player cleared it (jumped over without tripping)
+							if (boss_cleared)
+								score <= score + BOSS_SCORE;
+							boss_cleared <= 1'b0;
+						end else
+							boss_xpos <= boss_xpos - {7'd0, obs_speed};
+					end else if (boss_cnt != 0) begin
+						boss_cnt <= boss_cnt - 1'b1;
+					end else begin
+						// countdown finished and no boss present: spawn one
+						boss_valid <= 1'b1;
+						boss_xpos <= `OBS_SPAWN_X;
+						boss_cleared <= 1'b0;
+					end
+				end
+
+				// Track if player cleared boss: feet fully above its top while rising
+				if (boss_valid && player_vy < 0 && hit_player_b < `BOSS_TOP)
+					boss_cleared <= 1'b1;
 
 				// ---- spawn countdowns ----
 				if (spawn_pop)
@@ -941,45 +1081,106 @@ always @(posedge clk) begin
 					end else begin
 						timer <= 0;
 						state <= S_OVER;
+						// Start the reveal from scratch: score first, then the
+						// best score, then the choice.
+						over_cnt <= 0;
+						over_phase <= 0;
+						over_sel <= 0;
 						if (high_score_will_update) begin
 							high_score <= next_score;
 						end
 					end
 				end else begin
 					frame_cnt <= frame_cnt + 1'b1;
+					if (shake_cnt != 0)
+						shake_cnt <= shake_cnt - 1'b1;
+				end
+
+				// Screen shake on tripping a loss ridge (or the boss). Placed
+				// AFTER the decrement so the kick (2 frames) wins this frame.
+				if ((obs_hit_valid && !obs_gain[obs_hit_idx]) || boss_hit_valid) begin
+					shake_cnt <= 2'd2;
+					shake_dir <= ~shake_dir;
 				end
 			end else if (state == S_COUNT) begin
-				// ---- pre-game countdown: 5,4,3,2,1, then play ----
+				// ---- pre-game countdown: 3,2,1 then play; JUMP skips ----
 				if (frame_tick) begin
-					if (count_frames == FPS - 1) begin
+					if (btn_jump_rise || (count_frames == FPS - 1 && count_val <= 1)) begin
+						// ---- start the run (also reached by holding JUMP) ----
+						count_val <= 0;
 						count_frames <= 0;
-						if (count_val > 1) begin
-							count_val <= count_val - 1'b1;
-						end else begin
-							// ---- start the run ----
-							count_val <= 0;
-							player_x <= PLAYER_START_X;
-							player_dir <= 1;
-							player_y_fx <= GROUND_FX;
-							player_vy <= 0;
-							air_jumps <= AIR_JUMPS_MAX;
-							obj_valid <= 0;
-							obs_valid <= 0;
-							obs_tall <= 0;
-							obs_gain <= 0;
-							for (i = 0; i < MAX_OBS; i = i + 1)
-								obs_btn[i] <= 0;
-							timer <= TIMER_START;
-							score <= 0;
-							skill_charge <= 0;
-							state <= S_PLAY;
-							frame_cnt <= 0;
-							anim_cnt <= 0;
-							spawn_cnt <= SPAWN_PERIOD_FRAMES;
-							obs_cnt <= 8'd120;
-						end
+						player_x <= PLAYER_START_X;
+						player_dir <= 1;
+						player_y_fx <= GROUND_FX;
+						player_vy <= 0;
+						air_jumps <= AIR_JUMPS_MAX;
+						obj_valid <= 0;
+						obs_valid <= 0;
+						obs_tall <= 0;
+						obs_gain <= 0;
+						for (i = 0; i < MAX_OBS; i = i + 1)
+							obs_btn[i] <= 0;
+						timer <= TIMER_START;
+						score <= 0;
+						skill_charge <= 0;
+						combo_cnt <= 0;
+						combo_mult <= 3'd1;
+						shake_cnt <= 0;
+						boss_valid <= 0;
+						boss_xpos <= 0;
+						boss_cnt <= 0;
+						boss_cleared <= 0;
+						state <= S_PLAY;
+						frame_cnt <= 0;
+						anim_cnt <= 0;
+						spawn_cnt <= SPAWN_PERIOD_FRAMES;
+						obs_cnt <= 8'd150;
+						warmup_cnt <= 0;
+					end else if (count_frames == FPS - 1) begin
+						count_frames <= 0;
+						count_val <= count_val - 1'b1;
 					end else begin
 						count_frames <= count_frames + 1'b1;
+					end
+				end
+			end else if (state == S_OVER) begin
+				// -----------------------------------------------------------
+				// Results screen, revealed in phases: score shows first, the
+				// best score pops in when over_cnt[6] goes high (frame 64),
+				// and the PLAY AGAIN / LEAVE choice appears when over_cnt[5]
+				// goes high too (frame 96). The choice stays up for as long
+				// as the player sits on the screen.
+				// -----------------------------------------------------------
+				if (frame_tick) begin
+					if (over_phase == 2 && btn_jump_rise) begin
+						// ---- confirm the choice ----
+						// PLAY AGAIN goes into the countdown (which clears the
+						// player, objects, score, timer and charge when the
+						// run starts); LEAVE goes back to the difficulty menu,
+						// keeping the high score. The frozen run stays dimmed
+						// behind either screen, exactly as before.
+						if (over_sel == 0) begin
+							count_val <= 3;
+							count_frames <= 0;
+							state <= S_COUNT;
+						end else begin
+							state <= S_MENU_DIFF;
+						end
+					end else if (over_phase == 2 && menu_move_rise) begin
+						// ---- flip the choice ----
+						over_sel <= ~over_sel;
+					end else begin
+						// ---- reveal timing. Bit-triggered so it is a couple
+						// of ANDs, not 7-bit compares: the best score pops in
+						// when over_cnt[6] goes high (frame 64), the choice
+						// when over_cnt[5] goes high as well (frame 96). The
+						// phase reg only ever advances, so the counter
+						// wrapping at 127 is harmless.
+						over_cnt <= over_cnt + 1'b1;
+						if (over_phase == 0 && over_cnt[6] && !over_cnt[5])
+							over_phase <= 2'd1;
+						else if (over_phase == 1 && over_cnt[6] && over_cnt[5])
+							over_phase <= 2'd2;
 					end
 				end
 			end
@@ -989,4 +1190,108 @@ always @(posedge clk) begin
 			skill_charge <= 0;
 	end
 end
+
+// ===========================================================================
+// Sound event bus
+//
+// One frame-aligned bus: sound_pulse (one clock wide) + sound_ev id. The ids
+// must match sound_engine.v. Priority, high to low: end of run / new high
+// score, skill start, skill end, ridge trip, ember catch, jump, time warning,
+// countdown / GO, menu confirm, menu move.
+//
+// skill_start from skill_slot is a raw pixel-clock pulse (not frame-aligned),
+// so it is sampled on every clock; everything else is frame-aligned and is
+// sampled once at the frame tick.
+// ===========================================================================
+localparam EV_MENU     = 5'd1;
+localparam EV_CONFIRM  = 5'd2;
+localparam EV_COUNT    = 5'd3;
+localparam EV_GO       = 5'd24;
+localparam EV_JUMP     = 5'd6;
+localparam EV_JUMP2    = 5'd5;
+localparam EV_JUMP3    = 5'd4;
+localparam EV_C1       = 5'd5;
+localparam EV_C3       = 5'd17;
+localparam EV_C5       = 5'd25;
+localparam EV_CRYSTAL  = 5'd4;
+localparam EV_SUNSTONE = 5'd16;
+localparam EV_SHARD    = 5'd7;
+localparam EV_TRIP     = 5'd8;
+localparam EV_SKILL    = 5'd24;
+localparam EV_SKILL_E  = 5'd26;
+localparam EV_WARN     = 5'd18;
+localparam EV_OVER     = 5'd28;
+localparam EV_HIGH     = 5'd25;
+
+reg skill_on_q;
+
+always @(posedge clk) begin
+	if (!resetn) begin
+		sound_pulse <= 0;
+		sound_ev <= 0;
+		skill_on_q <= 0;
+	end else begin
+		skill_on_q <= skill_on;
+
+		// raw edge first: skill_start is one pixel-clock wide and can land
+		// between frames, so it must be seen on every clock.
+		if (skill_start) begin
+			sound_pulse <= 1'b1;
+			sound_ev <= EV_SKILL;
+		end else if (skill_on_q && !skill_on) begin
+			sound_pulse <= 1'b1;
+			sound_ev <= EV_SKILL_E;
+		end else if (frame_tick) begin
+
+			if (game_ending) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= high_score_will_update ? EV_HIGH : EV_OVER;
+			end else if (game_step && obs_hit_valid) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= obs_gain[obs_hit_idx] ? EV_C1 : EV_TRIP;
+			end else if (game_step && boss_hit_valid) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= EV_TRIP;
+			end else if (game_step && hit_valid) begin
+				sound_pulse <= 1'b1;
+				case (obj_type[hit_idx])
+					TYPE_COIN_1:  sound_ev <= EV_C1;
+					TYPE_COIN_3:  sound_ev <= EV_C3;
+					TYPE_COIN_5:  sound_ev <= EV_C5;
+					TYPE_CHARGE:  sound_ev <= EV_CRYSTAL;
+					TYPE_TIME:    sound_ev <= EV_SUNSTONE;
+					default:      sound_ev <= EV_SHARD;
+				endcase
+			end else if (game_step && btn_jump_rise) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= on_ground          ? EV_JUMP  :
+							(air_jumps == 2'd2) ? EV_JUMP2 : EV_JUMP3;
+			end else if (timer_tick && next_timer > 1 && next_timer <= 11) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= EV_WARN;
+			end else if (state == S_COUNT && count_frames == FPS - 1) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= (count_val == 1) ? EV_GO : EV_COUNT;
+			end else if (state == S_OVER && over_phase == 2 && btn_jump_rise) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= EV_CONFIRM;
+			end else if (in_menu && btn_jump_rise) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= EV_CONFIRM;
+			end else if (in_menu && menu_move_rise) begin
+				sound_pulse <= 1'b1;
+				sound_ev <= EV_MENU;
+			end else begin
+				sound_pulse <= 0;
+			end
+		end else begin
+			sound_pulse <= 0;
+		end
+	end
+end
+
+// Screen shake: 2-frame horizontal offset when tripping
+assign shake_x = (shake_cnt == 2'd2) ? (shake_dir ? 10'd4 : -10'sd4) :
+				 (shake_cnt == 2'd1) ? (shake_dir ? 10'd2 : -10'sd2) : 10'd0;
+
 endmodule

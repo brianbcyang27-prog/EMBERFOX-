@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1" encoding="UTF-8"?>
 <!DOCTYPE gowin-fpga-project>
 <Project>
     <Template>FPGA</Template>
@@ -9,7 +9,6 @@
         <File path="src/common/ff_sync.v" type="file.verilog" enable="1"/>
         <File path="src/common/fifo.v" type="file.verilog" enable="1"/>
         <File path="src/common/bin2bcd.v" type="file.verilog" enable="1"/>
-        <File path="src/common/bin2bcd7.v" type="file.verilog" enable="1"/>
         <File path="src/common/lfsr32.v" type="file.verilog" enable="1"/>
         <File path="src/common/reset_sync.v" type="file.verilog" enable="1"/>
         <File path="src/common/rom.v" type="file.verilog" enable="1"/>
@@ -28,14 +27,10 @@
         <File path="src/ip/gowin_pllvr.v" type="file.verilog" enable="1"/>
         <File path="src/overlay/bg_layer.v" type="file.verilog" enable="1"/>
         <File path="src/overlay/obj_layer.v" type="file.verilog" enable="1"/>
-        <File path="src/overlay/res_overlay.v" type="file.verilog" enable="1"/>
+$10"/>
         <File path="src/overlay/ui_layer.v" type="file.verilog" enable="1"/>
         <File path="src/top.v" type="file.verilog" enable="1"/>
         <File path="src/hdmi_coin.cst" type="file.cst" enable="1"/>
         <File path="src/hdmi_coin.sdc" type="file.sdc" enable="1"/>
     </FileList>
-    <Synthesis>
-        <Option name="auto_bram" value="0"/>
-        <Option name="use_bram" value="0"/>
-    </Synthesis>
 </Project>

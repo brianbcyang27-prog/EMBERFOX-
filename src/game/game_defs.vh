@@ -47,6 +47,15 @@
 `define OBS_Y         10'd384   // 384 + 32 = 416, so it sits exactly on the floor
 `define OBS_TALL_Y    10'd352   // 352 + 64 = 416, same floor line
 
+// ---- boss ridge -----------------------------------------------------------
+// A rare wide obstacle that spans the whole play width at 64px and reaches
+// 96px up the screen. The fox's feet must get above BOSS_TOP to clear it: a
+// single full jump lifts the feet ~107px, so this is a "real jump" obstacle.
+// It slides in from the right using the same biased storage as OBS_*.
+`define BOSS_W       10'd64
+`define BOSS_H       10'd96
+`define BOSS_TOP     10'd320   // 320 + 96 = 416 = floor line
+
 // ---- Lure skill ----------------------------------------------------------
 // How far past the sprite the catch box reaches while Lure is running.
 `define LURE_PAD      10'd28

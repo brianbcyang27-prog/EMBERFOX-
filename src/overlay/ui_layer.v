@@ -13,6 +13,7 @@ module ui_layer #(
 	input [11:0] high_score_bcd,
 	input [2:0] skill_charge,
 	input [7:0] skill_timer,
+	input [2:0] combo_mult,
 	input game_over,
 	input btn_left,
 	input btn_right,
@@ -33,14 +34,14 @@ module ui_layer #(
 
 localparam UI_TOP = 416;
 localparam UI_TOP_BAR_H = 16;   // dark bar above the background image band
-localparam DIGIT_Y = 424;
+localparam DIGIT_Y = 424;       // bottom UI bar
 localparam DIGIT_W = 24;
 localparam DIGIT_H = 48;
 localparam DIGIT_GAP = 6;
 
-localparam TIMER_X = 32;
-localparam SCORE_X = 263;
-localparam HIGH_SCORE_X = 494;
+localparam TIMER_X = 32;        // bottom-left
+localparam SCORE_X = 263;       // bottom-center
+localparam HIGH_SCORE_X = 494;  // bottom-right
 localparam CHARGE_X = 220;
 localparam CHARGE_Y = 474;
 localparam CHARGE_W = 36;
@@ -48,6 +49,8 @@ localparam CHARGE_H = 6;
 localparam CHARGE_GAP = 4;
 localparam SKILL_TIME_X = 430;
 localparam SKILL_TIME_Y = 452;
+localparam COMBO_X = 410;        // next to score
+localparam COMBO_Y = 424;
 localparam SMALL_DIGIT_W = 12;
 localparam SMALL_DIGIT_H = 24;
 localparam SMALL_DIGIT_GAP = 3;
@@ -63,6 +66,7 @@ localparam [23:0] HIGH_SCORE_RGB = 24'hE8E8E8;
 localparam [23:0] INDICATOR_RGB  = 24'h20FF40;
 localparam [23:0] CHARGE_RGB     = 24'hFFEA20;
 localparam [23:0] SKILL_TIME_RGB = 24'hFFEA20;
+localparam [23:0] COMBO_RGB      = 24'hFF4040;  // red for combo
 
 reg [`SVO_XYBITS-1:0] hcursor, vcursor;
 reg [4:0] blink_cnt;
@@ -128,6 +132,22 @@ function [7:0] small_col;
 	end
 endfunction
 
+// 1-digit combo multiplier (x1, x2, x3)
+function [7:0] combo_col;
+	input [`SVO_XYBITS-1:0] px;
+	input [`SVO_XYBITS-1:0] base;
+	reg [`SVO_XYBITS-1:0] dleft;
+	reg [4:0] lx;
+	begin
+		combo_col = 8'd0;
+		dleft = base;
+		if (px >= dleft && px < dleft + SMALL_DIGIT_W) begin
+			lx = px - dleft;
+			combo_col = {1'b1, 2'd0, lx};
+		end
+	end
+endfunction
+
 function charge_bar_pixel;
 	input [`SVO_XYBITS-1:0] x;
 	input [`SVO_XYBITS-1:0] y;
@@ -155,18 +175,18 @@ endfunction
 // value, colour field, and the 6x12 source coordinate (screen coords scaled
 // down by replication: big = >>2 for 24x48, small = >>1 for 12x24).
 reg        glyph_hit;
-reg [1:0]  field;        // 0=timer 1=score 2=high 3=skill(small)
+reg [2:0]  field;        // 0=timer 1=score 2=high 3=skill(small) 4=combo
 reg [3:0]  digit;
 reg [2:0]  src_x;
 reg [3:0]  src_y;
 
-reg [7:0]  tcol, scol, hcol, kcol;
+reg [7:0]  tcol, scol, hcol, kcol, ccol;
 reg [4:0]  lx_sel;
 reg [`SVO_XYBITS-1:0] ly_big, ly_small;
 
 always @(*) begin
 	glyph_hit = 1'b0;
-	field     = 2'd0;
+	field     = 3'd0;
 	digit     = 4'd0;
 	src_x     = 3'd0;
 	src_y     = 4'd0;
@@ -178,11 +198,12 @@ always @(*) begin
 	scol = big_col(pixel_x, SCORE_X);
 	hcol = big_col(pixel_x, HIGH_SCORE_X);
 	kcol = small_col(pixel_x, SKILL_TIME_X);
+	ccol = combo_col(pixel_x, COMBO_X);
 
 	if (pixel_y >= DIGIT_Y && pixel_y < DIGIT_Y + DIGIT_H) begin
 		ly_big = pixel_y - DIGIT_Y;
 		if (tcol[7]) begin
-			glyph_hit = 1'b1; field = 2'd0; lx_sel = tcol[4:0];
+			glyph_hit = 1'b1; field = 3'd0; lx_sel = tcol[4:0];
 			case (tcol[6:5])
 				2'd0: digit = timer_d2;
 				2'd1: digit = timer_d1;
@@ -191,7 +212,7 @@ always @(*) begin
 			src_x = lx_sel[4:2];
 			src_y = ly_big[5:2];
 		end else if (scol[7]) begin
-			glyph_hit = 1'b1; field = 2'd1; lx_sel = scol[4:0];
+			glyph_hit = 1'b1; field = 3'd1; lx_sel = scol[4:0];
 			case (scol[6:5])
 				2'd0: digit = score_d2;
 				2'd1: digit = score_d1;
@@ -200,7 +221,7 @@ always @(*) begin
 			src_x = lx_sel[4:2];
 			src_y = ly_big[5:2];
 		end else if (hcol[7]) begin
-			glyph_hit = 1'b1; field = 2'd2; lx_sel = hcol[4:0];
+			glyph_hit = 1'b1; field = 3'd2; lx_sel = hcol[4:0];
 			case (hcol[6:5])
 				2'd0: digit = high_score_d2;
 				2'd1: digit = high_score_d1;
@@ -218,11 +239,23 @@ always @(*) begin
 		pixel_y >= SKILL_TIME_Y && pixel_y < SKILL_TIME_Y + SMALL_DIGIT_H) begin
 		ly_small = pixel_y - SKILL_TIME_Y;
 		if (kcol[7]) begin
-			glyph_hit = 1'b1; field = 2'd3; lx_sel = kcol[4:0];
+			glyph_hit = 1'b1; field = 3'd3; lx_sel = kcol[4:0];
 			case (kcol[6:5])
 				2'd0: digit = skill_timer_d1;
 				default: digit = skill_timer_d0;
 			endcase
+			src_x = lx_sel[3:1];
+			src_y = ly_small[4:1];
+		end
+	end
+
+	// Combo multiplier (x2, x3) - shown next to score when > 1
+	if (!glyph_hit && (combo_mult > 3'd1) &&
+		pixel_y >= COMBO_Y && pixel_y < COMBO_Y + SMALL_DIGIT_H) begin
+		ly_small = pixel_y - COMBO_Y;
+		if (ccol[7]) begin
+			glyph_hit = 1'b1; field = 3'd4; lx_sel = ccol[4:0];
+			digit = combo_mult;  // just show 2 or 3
 			src_x = lx_sel[3:1];
 			src_y = ly_small[4:1];
 		end
@@ -232,7 +265,7 @@ end
 wire [7:0] font_addr = {digit, src_y};
 wire [5:0] font_row;
 
-rom #(
+(* ramstyle = "distributed" *) rom #(
 	.DATA_WIDTH(6),
 	.ADDR_WIDTH(8),
 	.DEPTH(160),
@@ -254,7 +287,7 @@ wire right_indicator = btn_right && pixel_y >= UI_TOP + 8 && pixel_y < UI_TOP + 
 
 // 1-stage pipeline to line up with the registered font ROM read (1 cycle).
 reg glyph_hit_d;
-reg [1:0] field_d;
+reg [2:0] field_d;
 reg [2:0] src_x_d;
 reg [SVO_BITS_PER_PIXEL-1:0] bg_d;
 reg [0:0] tuser_d;
@@ -266,15 +299,16 @@ assign in_axis_tready  = out_axis_tready;
 assign out_axis_tvalid = tvalid_d;
 assign out_axis_tuser  = tuser_d;
 
-wire glyph_on = glyph_hit_d & font_row[3'd5 - src_x_d];   // MSB = leftmost column
+wire glyph_on = glyph_hit_d & font_row[3'd5 - src_x_d];
 
 assign out_axis_tdata =
 	left_ind_d                              ? INDICATOR_RGB :
 	right_ind_d                             ? INDICATOR_RGB :
-	(glyph_on && field_d == 2'd0)               ? TIMER_RGB :
-	(glyph_on && field_d == 2'd1 && score_on_d) ? SCORE_RGB :
-	(glyph_on && field_d == 2'd2)               ? HIGH_SCORE_RGB :
-	(glyph_on && field_d == 2'd3)               ? SKILL_TIME_RGB :
+	(glyph_on && field_d == 3'd0)               ? TIMER_RGB :
+	(glyph_on && field_d == 3'd1 && score_on_d) ? SCORE_RGB :
+	(glyph_on && field_d == 3'd2)               ? HIGH_SCORE_RGB :
+	(glyph_on && field_d == 3'd3)               ? SKILL_TIME_RGB :
+	(glyph_on && field_d == 3'd4)               ? COMBO_RGB :
 	charge_d                                ? CHARGE_RGB :
 	in_ui_d                                 ? UI_BG_RGB :
 											  bg_d;

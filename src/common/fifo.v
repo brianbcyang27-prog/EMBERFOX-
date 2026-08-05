@@ -18,7 +18,7 @@ module fifo #(
 
 	output wire [ADDR_W:0] level
 );
-reg [WIDTH-1:0] mem [0:DEPTH-1];
+(* ramstyle = "distributed" *) reg [WIDTH-1:0] mem [0:DEPTH-1];
 
 reg [ADDR_W-1:0] wr_ptr;
 reg [ADDR_W-1:0] rd_ptr;

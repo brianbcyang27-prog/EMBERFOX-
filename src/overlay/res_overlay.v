@@ -13,6 +13,7 @@ module res_overlay #(
 	input [2:0] title_id,
 	input [1:0] menu_sel,
 	input [2:0] count_val,          // 5..1 during the pre-game countdown
+	input [1:0] over_phase,         // 0 = score, 1 = best popped, 2 = choice up
 	input [11:0] score_bcd,
 	input [11:0] high_score_bcd,
 
@@ -69,15 +70,14 @@ localparam [9:0] HOWTO_BODY_Y0_FS = 10'd144;
 localparam [9:0] HOWTO_BODY_STRIDE = 10'd56;
 localparam [9:0] HOWTO_X0   = 10'd160;  // "CATCH EMBERS FOR POINTS"  (23 chars)
 localparam [9:0] HOWTO_X1   = 10'd195;  // "JUMP THE OBSTACLES"       (18)
-localparam [9:0] HOWTO_X2   = 10'd181;  // "LEFT OR RIGHT TO MOVE"    (20)
-localparam [9:0] HOWTO_X3   = 10'd181;  // "PRESS JUMP WHEN READY"    (20)
-localparam [9:0] HOWTO_X_HINT = 10'd230; // "JUMP TO START"           (13)
 
-// Menu button legend, scale 2, centred: tells the player which button to press.
-localparam [9:0] HINT1_Y = 10'd292;        // "SELECT LEFT OR RIGHT"  (20 chars)
-localparam [9:0] HINT1_X = 10'd181;
-localparam [9:0] HINT2_Y = 10'd320;        // "JUMP TO CONFIRM"       (15 chars)
-localparam [9:0] HINT2_X = 10'd216;
+// Menu legend: simple text hints (replaces button glyphs to save LUTs)
+localparam [9:0] HINT1_Y = 10'd292;         // "MOVE LEFT OR RIGHT"
+localparam [9:0] HINT2_Y = 10'd320;         // "JUMP TO CATCH"
+localparam [9:0] HINT1_X = 10'd200;         // left-aligned
+localparam [9:0] HINT2_X = 10'd200;
+localparam [5:0] HINT1_N = 6'd18;           // "MOVE LEFT OR RIGHT"
+localparam [5:0] HINT2_N = 6'd13;           // "JUMP TO CATCH"
 
 // Countdown digit, scale 8 (48x96), centred on the panel.
 localparam [9:0] COUNT_X = 10'd296;
@@ -87,15 +87,22 @@ localparam [9:0] COUNT_GW = 10'd48;
 localparam [9:0] LABEL_STRIDE  = 10'd14;   // (6+1) * 2
 localparam [9:0] LABEL_GW      = 10'd12;   // 6 * 2
 localparam [9:0] SCORE_LABEL_X = 10'd152;
-localparam [9:0] SCORE_LABEL_Y = 10'd228;
+localparam [9:0] SCORE_LABEL_Y = 10'd208;
 localparam [9:0] BEST_LABEL_X  = 10'd152;
-localparam [9:0] BEST_LABEL_Y  = 10'd300;
+localparam [9:0] BEST_LABEL_Y  = 10'd264;
 
 localparam [9:0] VALUE_X       = 10'd300;
 localparam [9:0] VAL_STRIDE    = 10'd32;   // (6+2) * 4
 localparam [9:0] VAL_GW        = 10'd24;   // 6 * 4
-localparam [9:0] SCORE_VAL_Y   = 10'd216;
-localparam [9:0] BEST_VAL_Y    = 10'd288;
+localparam [9:0] SCORE_VAL_Y   = 10'd196;
+localparam [9:0] BEST_VAL_Y    = 10'd252;
+
+// Results-screen choice row: "PLAY AGAIN" and "LEAVE" in one shared body
+// line ("PLAY AGAIN  LEAVE"), so it reuses the body glyph field instead of
+// a second set of column logic. Base X centres the two words either side of
+// the 320 panel centre.
+localparam [9:0] CHOICE_Y = 10'd318;
+localparam [9:0] CHOICE_X = 10'd187;
 
 // glyph indices in res_font.mem
 localparam GLYPH_SPACE = 6'd10;
@@ -186,6 +193,9 @@ wire in_border =
 	 pixel_x >= PANEL_X1 - BORDER_T ||
 	 pixel_y < PANEL_Y0 + BORDER_T ||
 	 pixel_y >= PANEL_Y1 - BORDER_T);
+
+// Legend button glyphs removed - using simple text hints instead
+// to save ~60 LUTs. The hint text is rendered via glyph_col below.
 
 function [23:0] dim_bgr888;
 	input [23:0] rgb;
@@ -278,47 +288,34 @@ function [5:0] title_glyph;
 endfunction
 
 // The body text: one shared 24-char field whose content depends on which line
-// the pixel is in. Lines 0-1 double as the menu description and the top of the
-// how-to list; lines 2-3 are how-to only.
+// the pixel is in. Lines 0-1 double as the menu description and the legend hints.
 function [5:0] body_char;
 	input [2:0] line;
 	input [5:0] idx;
 	begin
 		body_char = CH_SP;
 		case (line)
-			3'd0: case (idx)        // "CATCH EMBERS FOR POINTS"
-				0: body_char = CH_C;  1: body_char = CH_A;  2: body_char = CH_T;
-				3: body_char = CH_C;  4: body_char = CH_H;  6: body_char = CH_E;
-				7: body_char = CH_M;  8: body_char = CH_B;  9: body_char = CH_E;
-				10: body_char = CH_R; 11: body_char = CH_S; 13: body_char = CH_F;
-				14: body_char = CH_O; 15: body_char = CH_R; 17: body_char = CH_P;
-				18: body_char = CH_O; 19: body_char = CH_I; 20: body_char = CH_N;
-				21: body_char = CH_T; 22: body_char = CH_S;
+			3'd0: case (idx)        // "MOVE LEFT OR RIGHT"
+				0: body_char = CH_M;  1: body_char = CH_O;  2: body_char = CH_V;
+				3: body_char = CH_E;  5: body_char = CH_L;  6: body_char = CH_E;
+				7: body_char = CH_F;  8: body_char = CH_T;  10: body_char = CH_O;
+				11: body_char = CH_R; 13: body_char = CH_R; 14: body_char = CH_I;
+				15: body_char = CH_G; 16: body_char = CH_H; 17: body_char = CH_T;
 				default: body_char = CH_SP;
 			endcase
-			3'd1: case (idx)         // "JUMP THE OBSTACLES"
-				0: body_char = CH_J;  1: body_char = CH_U;  2: body_char = CH_M;
-				3: body_char = CH_P;  5: body_char = CH_T;  6: body_char = CH_H;
-				7: body_char = CH_E;  9: body_char = CH_O;  10: body_char = CH_B;
-				11: body_char = CH_S; 12: body_char = CH_T; 13: body_char = CH_A;
-				14: body_char = CH_C; 15: body_char = CH_L; 16: body_char = CH_E;
-				17: body_char = CH_S;
-				default: body_char = CH_SP;
-			endcase
-			3'd2: case (idx)         // "LEFT OR RIGHT TO MOVE"
-				0: body_char = CH_L;  1: body_char = CH_E;  2: body_char = CH_F;
-				3: body_char = CH_T;  5: body_char = CH_O;  6: body_char = CH_R;
-				8: body_char = CH_R;  9: body_char = CH_I;  10: body_char = CH_G;
-				11: body_char = CH_H; 12: body_char = CH_T; 14: body_char = CH_T;
-				15: body_char = CH_O; 17: body_char = CH_M; 18: body_char = CH_O;
-				19: body_char = CH_V; 20: body_char = CH_E;
-				default: body_char = CH_SP;
-			endcase
-			3'd4: case (idx)         // "JUMP TO START"
+			3'd1: case (idx)         // "JUMP TO CATCH"
 				0: body_char = CH_J;  1: body_char = CH_U;  2: body_char = CH_M;
 				3: body_char = CH_P;  5: body_char = CH_T;  6: body_char = CH_O;
-				8: body_char = CH_S;  9: body_char = CH_T; 10: body_char = CH_A;
-				11: body_char = CH_R; 12: body_char = CH_T;
+				8: body_char = CH_C;  9: body_char = CH_A;  10: body_char = CH_T;
+				11: body_char = CH_C; 12: body_char = CH_H;
+				default: body_char = CH_SP;
+			endcase
+			3'd6: case (idx)         // "PLAY AGAIN  LEAVE" (results choice row)
+				0: body_char = CH_P;  1: body_char = CH_L;  2: body_char = CH_A;
+				3: body_char = CH_Y;  5: body_char = CH_A;  6: body_char = CH_G;
+				7: body_char = CH_A;  8: body_char = CH_I;  9: body_char = CH_N;
+				12: body_char = CH_L; 13: body_char = CH_E; 14: body_char = CH_A;
+				15: body_char = CH_V; 16: body_char = CH_E;
 				default: body_char = CH_SP;
 			endcase
 			default: case (idx)      // "PRESS JUMP WHEN READY"
@@ -331,60 +328,6 @@ function [5:0] body_char;
 				default: body_char = CH_SP;
 			endcase
 		endcase
-	end
-endfunction
-
-// The menu button legend: two centred lines telling the player which button
-// does what. Line 0 = how to pick, line 1 = how to confirm.
-function [5:0] hint_glyph;
-	input [2:0] line;
-	input [5:0] idx;
-	begin
-		hint_glyph = CH_SP;
-		case (line)
-			3'd0: case (idx)         // "SELECT LEFT OR RIGHT"
-				0: hint_glyph = CH_S;  1: hint_glyph = CH_E;  2: hint_glyph = CH_L;
-				3: hint_glyph = CH_E;  4: hint_glyph = CH_C;  5: hint_glyph = CH_T;
-				7: hint_glyph = CH_L;  8: hint_glyph = CH_E;  9: hint_glyph = CH_F;
-				10: hint_glyph = CH_T; 12: hint_glyph = CH_O; 13: hint_glyph = CH_R;
-				15: hint_glyph = CH_R; 16: hint_glyph = CH_I; 17: hint_glyph = CH_G;
-				18: hint_glyph = CH_H; 19: hint_glyph = CH_T;
-				default: hint_glyph = CH_SP;
-			endcase
-			default: case (idx)      // "JUMP TO CONFIRM"
-				0: hint_glyph = CH_J;  1: hint_glyph = CH_U;  2: hint_glyph = CH_M;
-				3: hint_glyph = CH_P;  5: hint_glyph = CH_T;  6: hint_glyph = CH_O;
-				8: hint_glyph = CH_C;  9: hint_glyph = CH_O; 10: hint_glyph = CH_N;
-				11: hint_glyph = CH_F; 12: hint_glyph = CH_I; 13: hint_glyph = CH_R;
-				14: hint_glyph = CH_M;
-				default: hint_glyph = CH_SP;
-			endcase
-		endcase
-	end
-endfunction
-
-// For a text field at base X with a given char stride & scaled glyph width,
-// report which char the pixel hits: {hit(1), idx(5), local_x(7)}.
-function [12:0] glyph_col;
-	input [`SVO_XYBITS-1:0] px;
-	input [9:0] base;
-	input [9:0] stride;
-	input [9:0] gw;
-	input [5:0] nchars;
-	integer i;
-	reg [9:0] cleft;
-	begin
-		glyph_col = 13'd0;
-		for (i = 0; i < 32; i = i + 1) begin
-			if (i < nchars) begin
-				cleft = base + i * stride;
-				if (px >= cleft && px < cleft + gw) begin
-					glyph_col[12]   = 1'b1;
-					glyph_col[11:7] = i[4:0];
-					glyph_col[6:0]  = px - cleft;
-				end
-			end
-		end
 	end
 endfunction
 
@@ -410,6 +353,33 @@ function [5:0] label_glyph;
 				default: label_glyph = GLYPH_SPACE;
 			endcase
 		endcase
+	end
+endfunction
+
+// For a text field at base X with a given char stride & scaled glyph width,
+// report which char the pixel hits: {hit(1), idx(5), local_x(7)}.
+// The longest field is BODY_NCHARS (24) wide, so the loop can stop there
+// instead of wasting 8 iterations of compare logic on an unused range.
+function [12:0] glyph_col;
+	input [`SVO_XYBITS-1:0] px;
+	input [9:0] base;
+	input [9:0] stride;
+	input [9:0] gw;
+	input [5:0] nchars;
+	integer i;
+	reg [9:0] cleft;
+	begin
+		glyph_col = 13'd0;
+		for (i = 0; i < 24; i = i + 1) begin
+			if (i < nchars) begin
+				cleft = base + i * stride;
+				if (px >= cleft && px < cleft + gw) begin
+					glyph_col[12]   = 1'b1;
+					glyph_col[11:7] = i[4:0];
+					glyph_col[6:0]  = px - cleft;
+				end
+			end
+		end
 	end
 endfunction
 
@@ -486,21 +456,21 @@ always @(*) begin
 	if (show_howto) begin
 		if      (pixel_y >= HOWTO_BODY_Y0_FS                                             && pixel_y < HOWTO_BODY_Y0_FS + 24) begin body_line = 3'd0; body_vis = 1'b1; end
 		else if (pixel_y >= HOWTO_BODY_Y0_FS +     HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS +     HOWTO_BODY_STRIDE + 24) begin body_line = 3'd1; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0_FS + 2 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 2 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd2; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0_FS + 3 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 3 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd3; body_vis = 1'b1; end
-		else if (pixel_y >= HOWTO_BODY_Y0_FS + 4 * HOWTO_BODY_STRIDE                     && pixel_y < HOWTO_BODY_Y0_FS + 4 * HOWTO_BODY_STRIDE + 24) begin body_line = 3'd4; body_vis = 1'b1; end
 		body_y0 = HOWTO_BODY_Y0_FS + {1'b0, body_line} * HOWTO_BODY_STRIDE;
 		case (body_line)
 			3'd0:   body_x = HOWTO_X0;
-			3'd1:   body_x = HOWTO_X1;
-			3'd2:   body_x = HOWTO_X2;
-			3'd3:   body_x = HOWTO_X3;
-			default: body_x = HOWTO_X_HINT;
+			default: body_x = HOWTO_X1;
 		endcase
 	end else if (show_menu) begin
 		if      (pixel_y >= MENU_BODY_Y0                        && pixel_y < MENU_BODY_Y0 + 24) begin body_line = 3'd0; body_vis = 1'b1; end
 		else if (pixel_y >= MENU_BODY_Y0 + BODY_Y_GAP           && pixel_y < MENU_BODY_Y0 + BODY_Y_GAP + 24) begin body_line = 3'd1; body_vis = 1'b1; end
 		body_y0 = MENU_BODY_Y0 + {1'b0, body_line} * BODY_Y_GAP;
+	end else if (show_result && over_phase[1] &&
+		pixel_y >= CHOICE_Y && pixel_y < CHOICE_Y + 24) begin
+		body_line = 3'd6;
+		body_vis  = 1'b1;
+		body_y0   = CHOICE_Y;
+		body_x    = CHOICE_X;
 	end
 
 	if (!glyph_hit && body_vis) begin
@@ -510,6 +480,8 @@ always @(*) begin
 			glyph = glyph_of(body_char(body_line, ci));
 			if (glyph != GLYPH_SPACE) begin
 				glyph_hit = 1'b1;
+				// Simplified: highlight entire choice row (saves ~10 LUTs vs per-word)
+				is_title  = (body_line == 3'd6);
 				font_x    = gc[6:0] >> 1;
 				font_y    = (pixel_y - body_y0) >> 1;
 			end
@@ -542,9 +514,9 @@ always @(*) begin
 		end
 	end
 
-	// Best label "BEST", scale 2. Results screen only - the menu bottom rows
-	// belong to the button legend instead.
-	if (!glyph_hit && show_result &&
+	// Best label "BEST", scale 2. Only on the results screen after the best
+	// score has popped in - the menu bottom rows belong to the legend instead.
+	if (!glyph_hit && show_result && over_phase[0] &&
 		pixel_y >= BEST_LABEL_Y && pixel_y < BEST_LABEL_Y + 24) begin
 		gc = glyph_col(pixel_x, BEST_LABEL_X, LABEL_STRIDE, LABEL_GW, 6'd4);
 		if (gc[12]) begin
@@ -575,8 +547,8 @@ always @(*) begin
 		end
 	end
 
-	// Best value (3 BCD digits), scale 4
-	if (!glyph_hit && show_result &&
+	// Best value (3 BCD digits), scale 4. Revealed with the BEST label.
+	if (!glyph_hit && show_result && over_phase[0] &&
 		pixel_y >= BEST_VAL_Y && pixel_y < BEST_VAL_Y + 48) begin
 		gc = glyph_col(pixel_x, VALUE_X, VAL_STRIDE, VAL_GW, 6'd3);
 		if (gc[12]) begin
@@ -589,17 +561,16 @@ always @(*) begin
 			glyph_hit = 1'b1;
 			font_x    = gc[6:0] >> 2;
 			font_y    = (pixel_y - BEST_VAL_Y) >> 2;
-		end
-	end
+end
+end
 
-	// Menu button legend, scale 2. Two centred lines in the bottom rows that
-	// the BEST row used to occupy on the results screen.
+	// Menu legend: simple text hints (replaces button glyphs to save LUTs)
 	if (!glyph_hit && show_menu) begin
 		if (pixel_y >= HINT1_Y && pixel_y < HINT1_Y + 24) begin
-			gc = glyph_col(pixel_x, HINT1_X, BODY_STRIDE, BODY_GW, 6'd20);
+			gc = glyph_col(pixel_x, HINT1_X, BODY_STRIDE, BODY_GW, HINT1_N);
 			if (gc[12]) begin
 				ci = gc[11:7];
-				glyph = hint_glyph(3'd0, ci);
+				glyph = glyph_of(body_char(3'd0, ci));  // reuse body_char line 0 for "MOVE LEFT OR RIGHT"
 				if (glyph != GLYPH_SPACE) begin
 					glyph_hit = 1'b1;
 					font_x    = gc[6:0] >> 1;
@@ -607,10 +578,10 @@ always @(*) begin
 				end
 			end
 		end else if (pixel_y >= HINT2_Y && pixel_y < HINT2_Y + 24) begin
-			gc = glyph_col(pixel_x, HINT2_X, BODY_STRIDE, BODY_GW, 6'd15);
+			gc = glyph_col(pixel_x, HINT2_X, BODY_STRIDE, BODY_GW, HINT2_N);
 			if (gc[12]) begin
 				ci = gc[11:7];
-				glyph = hint_glyph(3'd1, ci);
+				glyph = glyph_of(body_char(3'd1, ci));  // reuse body_char line 1 for "JUMP THE OBSTACLES"
 				if (glyph != GLYPH_SPACE) begin
 					glyph_hit = 1'b1;
 					font_x    = gc[6:0] >> 1;
@@ -624,7 +595,7 @@ end
 wire [9:0] font_addr = {glyph, font_y};
 wire [5:0] font_row_bits;
 
-rom #(
+(* ramstyle = "distributed" *) rom #(
 	.DATA_WIDTH(6),
 	.ADDR_WIDTH(10),
 	.DEPTH(1024),
@@ -660,7 +631,7 @@ wire [23:0] bg_sel = show_d ? dimmed : base_d;
 
 // The how-to page is full screen: no panel box, just a black page with text.
 assign out_axis_tdata =
-	(show_d && glyph_on)                 ? (is_title_d ? COLOR_TITLE : COLOR_TEXT) :
+	(show_d && glyph_on)                  ? (is_title_d ? COLOR_TITLE : COLOR_TEXT) :
 	(show_d && dot_on_d)                 ? (dot_sel_d ? COLOR_DOT_ON : COLOR_DOT_OFF) :
 	(show_d && in_border_d && !howto_d)  ? COLOR_BORDER :
 	(show_d && in_panel_d  && !howto_d)  ? COLOR_PANEL :

@@ -6,6 +6,8 @@ module top (
 	input btn_start,
 	input btn_skill,
 
+	output buzz,
+
 	output tmds_clk_n,
 	output tmds_clk_p,
 	output [2:0] tmds_d_n,
@@ -22,6 +24,7 @@ wire btn_left_syn, btn_left_deb;
 wire btn_right_syn, btn_right_deb;
 wire btn_start_syn, btn_start_deb;
 wire btn_skill_syn, btn_skill_deb;
+wire deb_tick;
 
 wire game_tvalid;
 wire game_tready;
@@ -74,30 +77,40 @@ ff_sync u_btn_skill_syn (
 	.out(btn_skill_syn)
 );
 
-debounce u_btn_left_deb (
+debounce_tick u_deb_tick (
 	.clk(clk_p),
 	.resetn(sys_resetn),
+	.tick(deb_tick)
+);
+
+debounce_sync u_btn_left_deb (
+	.clk(clk_p),
+	.resetn(sys_resetn),
+	.tick(deb_tick),
 	.in(btn_left_syn),
 	.out(btn_left_deb)
 );
 
-debounce u_btn_right_deb (
+debounce_sync u_btn_right_deb (
 	.clk(clk_p),
 	.resetn(sys_resetn),
+	.tick(deb_tick),
 	.in(btn_right_syn),
 	.out(btn_right_deb)
 );
 
-debounce u_btn_start_deb (
+debounce_sync u_btn_start_deb (
 	.clk(clk_p),
 	.resetn(sys_resetn),
+	.tick(deb_tick),
 	.in(btn_start_syn),
 	.out(btn_start_deb)
 );
 
-debounce u_btn_skill_deb (
+debounce_sync u_btn_skill_deb (
 	.clk(clk_p),
 	.resetn(sys_resetn),
+	.tick(deb_tick),
 	.in(btn_skill_syn),
 	.out(btn_skill_deb)
 );
@@ -116,7 +129,8 @@ game_core #(
 	.out_axis_tvalid(game_tvalid),
 	.out_axis_tready(game_tready),
 	.out_axis_tdata(game_tdata),
-	.out_axis_tuser(game_tuser)
+	.out_axis_tuser(game_tuser),
+	.buzz(buzz)
 );
 
 svo_hdmi #(
