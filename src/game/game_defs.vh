@@ -26,8 +26,14 @@
 
 // The drawn sprite is 64x64 but the art has empty margins, so the hitbox is
 // pulled in. Without this the fox "hits" things it never touched.
+//
+// PLAYER_PAD_X is deliberately large. A ridge sliding at 2 px/frame takes
+// (OBS_W + trip width) / 2 frames to pass the fox, and a jump only keeps the
+// feet above the ridge for ~44 frames - so if the trip box were the full
+// sprite the fox would land back on a ridge it had already cleared. See the
+// "can this actually be jumped?" note in game_ctrl.v.
 `define PLAYER_PAD_T  10'd16    // ignore the top of the sprite when catching
-`define PLAYER_PAD_X  10'd12    // ignore the sides when tripping on obstacles
+`define PLAYER_PAD_X  10'd20    // ignore the sides when tripping on obstacles
 
 // ---- falling objects (unchanged from the coin game) ----------------------
 `define OBJ_W         10'd32
@@ -47,18 +53,18 @@
 `define OBS_Y         10'd384   // 384 + 32 = 416, so it sits exactly on the floor
 `define OBS_TALL_Y    10'd352   // 352 + 64 = 416, same floor line
 
-// ---- boss ridge -----------------------------------------------------------
-// A rare wide obstacle that spans the whole play width at 64px and reaches
-// 96px up the screen. The fox's feet must get above BOSS_TOP to clear it: a
-// single full jump lifts the feet ~107px, so this is a "real jump" obstacle.
-// It slides in from the right using the same biased storage as OBS_*.
-`define BOSS_W       10'd64
-`define BOSS_H       10'd96
-`define BOSS_TOP     10'd320   // 320 + 96 = 416 = floor line
+// There is no boss ridge. A 64 px wide, 80 px tall variant existed, but the
+// design placed 237 LUTs over capacity on the GW1NSR-4C once a port
+// mis-declaration stopped hiding logic from the synthesiser, and the boss was
+// the cheapest thing to give up: HARD-only, twice a run, and thoroughly buggy
+// (spawned on frame one, re-applied its penalty every frame of the overlap,
+// paid its bonus for any jump taken while it was on screen, and at its
+// original 96 px height could not be cleared at all).
 
 // ---- Lure skill ----------------------------------------------------------
-// How far past the sprite the catch box reaches while Lure is running.
-`define LURE_PAD      10'd28
+// How far past the sprite the catch box reaches while Lure is running. Lure
+// also drops PLAYER_PAD_T, so the box grows upward as well as sideways.
+`define LURE_PAD      10'd40
 
 // Obstacles slide off the LEFT of the screen, so they are stored with
 // OBS_X_BIAS already added. That way the position stays positive the whole

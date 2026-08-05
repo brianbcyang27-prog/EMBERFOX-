@@ -27,6 +27,7 @@ A catch-and-jump arcade game for the Tang Nano 4K, built on the HDMI Coin hardwa
 | In the game | In the story |
 |---|---|
 | Your score, **HEAT** | How much of the sun you are carrying |
+| Your **HP bar** | How much of the cold the fox can still walk through |
 | Embers `+1 / +3 / +5` falling | Pieces of the fallen sun |
 | Frost shards `-3 / -5` falling | Cold that fell with them |
 | **Short floor ridges** | Frost pushed up out of the plain, driven west by the wind |
@@ -34,6 +35,12 @@ A catch-and-jump arcade game for the Tang Nano 4K, built on the HDMI Coin hardwa
 | Sunstone `+time` | A piece big enough to hold the dusk open longer |
 | Ember crystal `charge` | Fuel — five and the fox can spend it |
 | The timer hitting zero | The dark |
+| The HP bar hitting zero | The cold got there first |
+
+**Two things fall, two things matter.** What comes out of the sky moves your
+**heat**; what comes along the ground moves your **health**. Catching is how you
+score, jumping is how you survive, and the two bars never trade against each
+other — which is what makes it obvious, mid-run, which mistake you just made.
 
 ---
 
@@ -46,13 +53,15 @@ menu**, **three skills to choose between**, and a gentler, longer default run.
 
 | | Coin catcher | Emberfox |
 |---|---|---|
-| Falling objects | fall down, catch them | **same, unchanged** |
+| Falling objects | fall down, catch them | same, but the **mix and speed follow the difficulty** |
 | Background | still image | **same, unchanged** |
 | Player | moves left / right | left / right **and jumps** |
 | The floor | flat and empty | **spawns ridges** in two heights |
+| Losing | the clock running out | the clock **or the HP bar** running out |
+| Bottom-right of the UI | best score | **HP bar** (best score moved to the results panel) |
 | On reset | straight into a run | **full-screen how-to page**, then menu: difficulty, skill, countdown (shown once) |
-| Difficulty | fixed | **EASY / NORMAL / HARD** |
-| Skill | wired but did nothing | **EMBER / TIME / LURE** |
+| Difficulty | fixed | **EASY / NORMAL / HARD**, and it changes eight things |
+| Skill | wired but did nothing | **EMBER / GOLD / LURE** |
 
 ---
 
@@ -97,7 +106,7 @@ first.
 y   0.. 15   top UI bar
 y  16..415   play field (still background image)
 y 416        the floor
-y 416..479   bottom UI bar (timer, heat, best, charge)
+y 416..479   bottom UI bar (timer, heat, HP bar, charge)
 ```
 
 The fox is 64×64. Standing, its top edge is at **y = 352**, feet on the floor.
@@ -200,52 +209,158 @@ Play-again from the results screen jumps straight back to the difficulty menu
 The menu costs almost no hardware because it **reuses the results panel**. The
 big title line already existed for `TIME UP`; it now renders whichever word is
 selected, chosen by a `title_id` from `game_ctrl`. Under it are three small
-boxes with the chosen one lit — three fixed rectangles and a compare. The
-bottom rows carry a two-line button legend (**SELECT LEFT OR RIGHT** /
-**JUMP TO CONFIRM**) so a first-time player knows which button does what — the
-same rows show **BEST** on the results screen instead.
+boxes with the chosen one lit — three fixed rectangles and a compare. Below
+those sit two centred hint rows, **MOVE LEFT OR RIGHT** / **JUMP TO CONFIRM**,
+so a first-time player knows which button does what.
 
 Two of the states are new screens:
 
 - **`S_HOWTO`** is a **full-screen page** (black, not a panel box) with the
-  title **HOW TO PLAY** and five centred lines — catch embers, jump ridges,
-  move, **PRESS JUMP WHEN READY**, and **JUMP TO START**. JUMP moves on to the
-  difficulty menu. Rendering it full screen is nearly free: it is the same text
-  renderer with a mode gate that skips the panel box.
-- **`S_COUNT`** shows **GET READY** and a big 5 → 1 digit, one per second, then
+  title **HOW TO PLAY** and four centred lines — **CATCH EMBERS FOR HEAT**,
+  **JUMP OVER THE RIDGES**, **LEFT AND RIGHT SKILL**, **PRESS JUMP TO START**.
+  JUMP moves on to the difficulty menu. Rendering it full screen is nearly
+  free: it is the same text renderer with a mode gate that skips the panel box.
+- **`S_COUNT`** shows **GET READY** and a big 3 → 1 digit, one per second, then
   drops straight into the run. The countdown shares the body/digit renderer, so
   it costs a state and a counter, not a new layer.
+
+Every base X in `res_overlay` is the *computed* centred position for its own
+word (`x = 322 - 14n` at scale 4, `x = 321 - 7n` at scale 2) rather than an
+eyeballed constant, so no line sits off-centre and no two rows overlap.
 
 ### 4.8 The three skills
 
 `skill_slot.v` is untouched — it still owns the button edge, the charge check
 and the countdown. Only the **effects** are new, and each is a mux on something
-that already existed:
+that already existed.
 
-| Skill | What it does | Cost |
-|---|---|---|
-| **EMBER** | Frost burns: falling shards *and* floor ridges pay +1 instead of costing heat. Gravity weakens so jumps float. | two muxes |
-| **TIME** | The world crawls: ridges and falling objects both move at half speed (floored at 1 so nothing parks on screen). | two shifts |
-| **LURE** | The catch box reaches `LURE_PAD` further out on each side. The drawn sprite does not change — you just collect wider. | one mux |
+The previous set was three flavours of *"things move at a different speed"* —
+one slowed the world, one weakened gravity, one silently widened an invisible
+box. Firing a skill therefore did almost nothing you could see, and it never
+touched the score. Two of the three are now real buffs, one on the fox and one
+on what falls out of the sky:
+
+| Skill | Kind of buff | What it does | Cost |
+|---|---|---|---|
+| **EMBER** | on the **character** | **Faster and invulnerable** for 8 s. Ridges cannot take HP — they still shatter, they just cost nothing — and falling shards pay +1 instead of costing heat. The fox also moves at 12 px/frame instead of 8, and gravity drops to 5 so it jumps higher. | three muxes |
+| **GOLD** | on the **falling score** | Every ember pays **three times** face value — a +5 is worth 15 — and frost shards stop being a hazard, paying +3 instead. The multiplier digit already in the UI switches to `3`, so the payout is visible rather than just felt. | one mux |
+| **LURE** | on the **character's reach** | The catch box grows `LURE_PAD` (40 px) to the left and right *and* loses its 16 px of top padding, so embers are taken from well outside the sprite and from above the fox's head. | two muxes |
+
+GOLD deliberately **replaces** the combo multiplier rather than stacking with
+it. Stacked, a +5 caught on a 3× streak would pay 45 and a single skill use
+would out-score the rest of the run.
+
+All three draw the same burning-fox sprite, so the skill countdown digits are
+tinted per skill (orange / gold / green) — otherwise there is nothing on screen
+that says which one is running.
 
 ### 4.9 Difficulty
 
-| | Ridge speed | Frames between ridges | Tall ridges? |
+Difficulty used to set the ridge speed and spacing and nothing else. Since
+nearly all the score comes from the *falling* half, EASY and HARD played almost
+identically and the menu was close to decorative. It now drives eight things:
+
+| | EASY | NORMAL | HARD |
 |---|---|---|---|
-| **EASY** | 1 (flat, no ramp) | 210 | no |
-| **NORMAL** | 1 → 2 | 185 → 150 | no |
-| **HARD** | 2 → 3 | 160 → 114 | yes |
+| Ridge speed | 2 (flat, no ramp) | 2 → 3 | 3 → 4 |
+| Frames between ridges | 240 | 180 → 140 | 150 → 105 |
+| Tall ridges | no | no | **yes** |
+| Falling speed | 2 | 2 | 3 |
+| Frames between falling objects | 30 | 24 | 20 |
+| **Starting HP** | 5 | 4 | 3 |
+| Teaching window | 8 s | 5 s | 3 s |
+| Hazard mix *(`spawn_postprocess`)* | 3 hazards in 4 become +1 embers, survivors capped at −3 → **~9 %** | −5 capped to −3 → **35 %, all mild** | untouched → **35 %, full −3 / −5** |
 
 The gap has to **shrink** as speed grows. If it did not, faster ridges would end
 up spaced further apart on screen and the game would get *easier* as it sped up.
-Falling objects are never ramped — they keep the coin game's constants.
 
-**Every run opens with a teaching window.** For the first 5 seconds
-(`WARMUP_FRAMES = 300`) the spawn post-processor remaps frost shards to plain
-+1 embers. And for the whole first tier (24 s) every ridge is a gain one and
-HARD sends no tall ones, so the start teaches before it punishes.
+**Every run opens with a teaching window.** While it is open the spawn
+post-processor remaps frost shards to plain +1 embers. And on EASY and NORMAL
+the whole first tier (24 s) sends only gain ridges, so the start teaches before
+it punishes.
 
-### 4.10 Three bugs worth showing
+#### Why EASY does not use the slowest ridges
+
+This is the least obvious number in the game and it was backwards before.
+
+A ridge does not move vertically, so clearing one is a race between two
+durations: how long the ridge **sweeps** across the fox, and how long a jump
+**hangs** above it.
+
+```text
+sweep = (OBS_W + trip width) / speed = (32 + 24) / speed
+hang  = 44 frames above a short ridge, 37 above a tall one
+```
+
+```text
+speed 1  ->  sweep 56 frames   IMPOSSIBLE - the ridge is still underneath
+                               the fox when the jump has already ended
+speed 2  ->  sweep 28 frames   clears comfortably
+speed 3  ->  sweep 19 frames   clears easily
+```
+
+**A slower ridge is a harder ridge.** EASY used to run at 1 px/frame, which
+made its ridges the only genuinely unjumpable ones in the game. EASY now keeps
+the speed at a jumpable 2 and buys its easiness with a four-second gap, no tall
+ridges, a gentler hazard mix and a 1-heat penalty.
+
+Two constants exist to make that arithmetic work at all: `GRAVITY` dropped from
+9 to 7 (a jump is airborne 50 frames instead of 39) and `PLAYER_PAD_X` grew
+from 12 to 20 (the trip box is 24 px wide, not 40).
+
+### 4.10 Bugs found and fixed in the playability pass
+
+**The boss ridge, which is now gone.** It was fixed first and cut later, when
+the design turned out not to fit (see §7). Four separate faults, kept here
+because they are the reason it was the cheapest feature to give up:
+
+- *It ate your score.* The gap counter was cleared to 0 at the start of a run,
+  so the spawn condition (`counter == 0 and no boss present`) fired on the
+  **first frame of every game** — a 64 px wall in the fox's face during the
+  teaching window. Worse, touching it did not remove it, unlike every other
+  ridge, so `boss_hit_valid` stayed true for the whole overlap and re-applied
+  the penalty **once per frame**. Simulating the old code counts **206 penalty
+  frames in the first 15 seconds**; the score sat at 8 and never recovered.
+- *Its bonus wrapped the score.* It was added straight to `score` in the
+  clocked block, in a second non-blocking assignment that raced the ordinary
+  `score <= next_score` — so a catch on the same frame was silently lost. It
+  also skipped the 0..999 clamp, and `score` is 10 bits, so 999 + 50 wrapped
+  round to **25**.
+- *Its bonus was free.* "Did the player clear the boss?" was tested as *feet
+  above the boss top while rising*, with no check that the fox was anywhere
+  near it — so any jump taken while a boss was on screen paid out.
+- *It could not be jumped.* At 96 px tall a full jump held the feet above it
+  for ~28 frames while it took ~29 frames to sweep past. Off by one frame, so
+  strictly impossible.
+
+**The combo that punished good play.** The streak reset whenever *any* object
+reached the floor, including frost shards. Dodging a shard is the correct play,
+so the multiplier broke precisely when the player did the right thing and could
+almost never be held. Only dropping a real ember (types 0–2) breaks it now.
+
+**The screen shake that never shook.** `shake_x` was declared `output shake_x`
+— one bit — while being assigned a 10-bit signed offset. Every value it could
+produce (±4, ±2, 0) has bit 0 clear, so the port was permanently 0 and the
+14-bit adder it fed was folded away. Rather than pay for a real one on a part
+with no CLS left, tripping now flashes the score digits red, which is visible
+where a 4-pixel camera nudge on a 640×480 screen was not.
+
+**The best score that hid itself.** `res_overlay` gated the BEST row on
+`over_phase[0]`. The reveal runs 0 → 1 → 2, and 2 is binary `10`, so the best
+score popped in at phase 1 and vanished again the moment the PLAY AGAIN /
+LEAVE row appeared.
+
+**The menu that said everything twice.** The menu drew its two hint lines, then
+drew the *same two strings* again 40 px lower as a separate "hint" block, so
+every menu page showed each instruction twice. The how-to page meanwhile drew
+only two lines, at X positions computed for different, longer strings, so both
+sat off-centre.
+
+**A compile error nobody had hit.** `over_phase` was declared twice — once as
+`output reg` in the port list and again as a bare `reg`. Gowin's synthesiser
+tolerated it; `iverilog -g2012` rejects the file outright.
+
+### 4.11 Three older bugs worth showing
 
 **The disappearing jump.** Detecting a press needs the previous value:
 `pressed_now && !pressed_before`. The first version stored that previous value
@@ -355,27 +470,117 @@ All at the top of `game_ctrl.v` unless noted:
 
 | Parameter | Now | Effect |
 |---|---|---|
-| `GRAVITY` | 9 | Higher = heavier, snappier fall |
-| `GRAVITY_DASH` | 7 | How much EMBER floats |
-| `JUMP_V` | 176 | Jump launch speed → height |
+| `GRAVITY` | 7 | Higher = heavier, snappier fall. **Read §4.9 before raising it** — it sets how long a jump hangs, and ridges become unclearable if it gets much bigger |
+| `GRAVITY_EMBER` | 5 | How much EMBER floats |
+| `JUMP_V` | 176 | Jump launch speed → height (~138 px peak) |
 | `AIR_JUMP_V` | 140 | Second jump strength |
 | `AIR_JUMPS_MAX` | 2 | 1 = double jump, 3 = triple jump |
-| `OBS_SPEED_BASE` | 2 | HARD ridge base speed, px/frame |
-| `OBS_PENALTY` | 2 | Heat lost for clipping a ridge |
-| `OBS_BURN_BONUS` | 1 | Heat gained instead, while EMBER burns |
-| `FALL_SPEED` | 2 | Falling object speed *(coin game value)* |
-| `SPAWN_PERIOD_FRAMES` | 24 | Frames between falling objects *(coin game value)* |
 | `PLAYER_SPEED_START` | 8 | Sideways speed *(coin game value)* |
+| `PLAYER_SPEED_EMBER` | 12 | Sideways speed while EMBER burns |
+| `OBS_BONUS` | 1 | Heat gained for hitting a **gain** ridge |
+| `OBS_BURN_BONUS` | 1 | Heat gained from frost instead, while EMBER burns |
+| `GOLD_MULT` | 3 | GOLD multiplier on every catch |
+| `GOLD_SHARD` | 3 | What a frost shard pays during GOLD |
 | `SKILL_DURATION` | 8 | Skill length, seconds |
 | `SKILL_CHARGE_MAX` | 5 | Crystals needed to fire a skill |
-| `WARMUP_FRAMES` | 300 | Hazard-free opening of a run, frames (5 s) |
-| `TIMER_START` | 90 | Run length, seconds |
-| `LURE_PAD` *(game_defs.vh)* | 28 | How far LURE reaches |
+| `TIMER_START` | 90 | Run length, seconds — the same on every difficulty, so one BEST stays comparable |
+| `LURE_PAD` *(game_defs.vh)* | 40 | How far LURE reaches sideways |
+| `PLAYER_PAD_X` *(game_defs.vh)* | 20 | Trip-box inset. Also read §4.9 first |
 | `OBS_Y` / `OBS_TALL_Y` *(game_defs.vh)* | 384 / 352 | Ridge heights |
 
-The per-difficulty speed and spacing tables are in the `case (diff_sel)` block —
-that is the one place to touch if a mode still feels wrong.
+**Ridge speed, ridge spacing, falling speed, falling spacing, trip penalty,
+warm-up length and tall-ridge permission are no longer parameters
+at all** — they live in the `case (diff_sel)` table in `game_ctrl.v`, and the
+hazard mix lives in `spawn_postprocess.v`. Those two blocks are the one place
+to touch if a mode still feels wrong.
 
 `MAX_OBJ` (6) and `MAX_OBS` (3) are in `game_core.v`. Each extra one costs a
 full set of comparators in **both** `game_ctrl` and `obj_layer`, so they are the
 main dials for logic usage.
+
+---
+
+## 7. There is no logic budget left
+
+The design fills the GW1NSR-4C, with BSRAM already at 10/10. Anything new has
+to pay for itself, and at one point it stopped fitting entirely.
+
+Most of the recent work is cost-neutral: the four extra glyph strings and the
+whole per-difficulty table were funded by rewriting `res_overlay` to call
+`glyph_col` four times instead of eight, and to pass it a *constant* character
+count so its 24-iteration loop can fold. `glyph_col` is combinational, so every
+call site is its own copy in fabric, and a runtime character count made all 24
+iterations un-foldable at every one of them.
+
+**The boss ridge had to go, and finding out why was instructive.** Four signals
+— `boss_valid`, `boss_xpos`, `skill_sel`, `count_val` — were declared once in
+the ANSI port list and again as bare `reg`s. That is illegal, and
+GowinSynthesis said so:
+
+```text
+WARN (EX3628) : Redeclaration of ANSI port 'boss_valid' is not allowed
+```
+
+but only as a *warning*, and `iverilog` accepts it silently, so it went
+unnoticed. While those signals were mis-declared the synthesiser was not
+treating them as properly driven registers and logic hanging off them was being
+optimised away — the design only *appeared* to fit. Correcting the declarations
+added **279 LUTs** and put it 237 over capacity:
+
+| | LUT | ALU | total |
+|---|---|---|---|
+| With the port bug | 3720 | 759 | 4479 / 4608 |
+| Bug fixed | 3999 | 604 | 4603, **237 unplaced** |
+
+So the feature set genuinely exceeded the part. The boss was the cheapest thing
+to drop: HARD-only, twice a run, and carrying four separate bugs (§4.10).
+
+With it gone the design placed at 4518/4608 logic and CLS 2304/2304 —
+completely full, nothing left at all.
+
+**Then the health system gave a lot of it back.** Moving the ridge penalty out
+of `score_delta_eff` deleted two adders and a 3-way penalty mux from the score
+arithmetic, and dropping the best-score digits from `ui_layer` deleted a whole
+`big_col` field. Adding HP cost less than either:
+
+| | logic | CLS |
+|---|---|---|
+| before HP | 4518/4608 (99 %) | 2304/2304 (100 %) |
+| after HP | **4387/4608 (96 %)** | **2286/2304** |
+
+(Expect ±100 cells of run-to-run variance from the placer; two builds differing
+only in one text string measured 4300 and 4387. Treat these as approximate.)
+
+### And it closed timing
+
+The critical path was always `obj_ypos -> collision -> what it is worth ->
+score`. Two changes cut it: latching the best score during `S_OVER` from the
+registered `score` instead of comparing the live `next_score`, and then taking
+ridges out of the score path entirely.
+
+| | worst setup slack |
+|---|---|
+| baseline `26694be` | −21.066 ns |
+| best-score latch moved | −11.937 ns |
+| ridges moved to HP | **+0.006 ns — meets timing** |
+
+One negative number survives, and it is not the game logic:
+
+```text
+u_clkdiv/clkdiv_inst/CLKOUT.default_gen_clk  ->
+u_pll/pllvr_inst/CLKOUT.default_gen_clk      -1.823 ns
+```
+
+That is a crossing between the two clocks the tool *auto-created* because
+`hdmi_coin.sdc` declares only the 27 MHz oscillator and never creates the
+PLL/CLKDIV generated clocks. It is inside the HDMI serialiser, where the 1:5
+domain crossing is handled by dedicated OSER10 hardware rather than fabric, and
+it is present in every build ever made including the baseline. Declaring the
+generated clocks in the SDC is the fix; nothing in the game needs changing.
+
+It is also why there is no sound. `src/common/sound_engine.v` and a frame-aligned
+event bus in `game_ctrl` used to exist, but the engine was never instantiated —
+the bus drove two dangling wires and the synthesiser discarded everything it
+computed. Both were removed rather than left looking functional. Pin 19 has the
+piezo footprint and `buzz` is tied low; bringing sound back needs ~60 free LUTs
+that do not currently exist.

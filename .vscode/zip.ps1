@@ -5,7 +5,7 @@ $DESKTOP = [Environment]::GetFolderPath('Desktop')
 $ZIP_PATH = Join-Path $DESKTOP "$PROJECT_NAME`_$TIMESTAMP.zip"
 $TEMP_ROOT = Join-Path ([System.IO.Path]::GetTempPath()) "$PROJECT_NAME`_$TIMESTAMP"
 $STAGE_DIR = Join-Path $TEMP_ROOT $PROJECT_NAME
-$EXCLUDED_ROOT_ITEMS = @(".git", ".gitignore", "skills")
+$EXCLUDED_ROOT_ITEMS = @(".git", ".gitignore", "impl")
 
 if (Test-Path $TEMP_ROOT) {
     Remove-Item -LiteralPath $TEMP_ROOT -Recurse -Force

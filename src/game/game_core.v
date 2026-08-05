@@ -109,15 +109,13 @@ wire [11:0] high_score_bcd;
 wire [2:0] skill_charge;
 wire [7:0] skill_timer;
 wire skill_on;
+wire [1:0] skill_sel;
 wire game_over;
-wire [2:0] combo_mult;
-wire [9:0] shake_x;
+wire [2:0] score_mult;
+wire [2:0] hp;
+wire hurt;
 
-wire [4:0] sound_ev;
-wire sound_pulse;
 wire [1:0] over_phase;
-wire boss_valid;
-wire [OBS_X_BITS-1:0] boss_xpos;
 
 // The very first pixel of a frame is the game's clock: one tick = one step.
 assign frame_tick = bg_tvalid && bg_tready && bg_tuser[0];
@@ -169,18 +167,18 @@ game_ctrl #(
 	.skill_charge(skill_charge),
 	.skill_timer(skill_timer),
 	.skill_on(skill_on),
+	.skill_sel(skill_sel),
 	.game_over(game_over),
-	.combo_mult(combo_mult),
+	.score_mult(score_mult),
+	.hp(hp),
+	.hurt(hurt),
 	.count_val(count_val),
-	.sound_ev(sound_ev),
-	.sound_pulse(sound_pulse),
-	.over_phase(over_phase),
-	.shake_x(shake_x),
-	.boss_valid(boss_valid),
-	.boss_xpos(boss_xpos)
+	.over_phase(over_phase)
 );
 
-wire buzz;
+// Pin 19 has a piezo footprint but nothing drives it. See the note at the
+// bottom of game_ctrl.v: the sound engine that used to sit here was never
+// instantiated, and there is no logic budget to bring it back.
 assign buzz = 1'b0;
 
 bg_layer #(
@@ -214,9 +212,6 @@ obj_layer #(
 	.player_dir(player_dir),
 	.player_frame(player_frame),
 	.skill_on(skill_on),
-	.shake_x(shake_x),
-	.boss_valid(boss_valid),
-	.boss_xpos(boss_xpos),
 
 	.obj_valid_bus(obj_valid_bus),
 	.obj_lane_bus(obj_lane_bus),
@@ -249,10 +244,12 @@ ui_layer #(
 
 	.timer_bcd(timer_bcd),
 	.score_bcd(score_bcd),
-	.high_score_bcd(high_score_bcd),
 	.skill_charge(skill_charge),
 	.skill_timer(skill_timer),
-	.combo_mult(combo_mult),
+	.skill_sel(skill_sel),
+	.score_mult(score_mult),
+	.hp(hp),
+	.hurt(hurt),
 	.game_over(game_over),
 	.btn_left(btn_left),
 	.btn_right(btn_move_right),

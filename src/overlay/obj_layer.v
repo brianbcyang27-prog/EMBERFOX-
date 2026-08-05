@@ -34,7 +34,6 @@ module obj_layer #(
 	input       player_dir,
 	input [1:0] player_frame,
 	input       skill_on,
-	input [9:0] shake_x,
 
 	input [MAX_OBJ              -1:0] obj_valid_bus,
 	input [MAX_OBJ*LANE_BITS    -1:0] obj_lane_bus,
@@ -46,8 +45,6 @@ input [MAX_OBS            -1:0] obs_valid_bus,
 input [MAX_OBS            -1:0] obs_tall_bus,
 input [MAX_OBS*3          -1:0] obs_btn_bus,
 input [MAX_OBS*OBS_X_BITS -1:0] obs_xpos_bus,
-input boss_valid,
-input [OBS_X_BITS-1:0] boss_xpos,
 
 // input stream from previous layer
 	input in_axis_tvalid,
@@ -83,8 +80,6 @@ reg [`SVO_XYBITS-1:0] vcursor;
 reg atlas_hit_d;
 reg hit_player_d;
 reg skill_on_d;
-reg boss_hit_d;
-reg [7:0] boss_rgb_d;
 reg [SVO_BITS_PER_PIXEL-1:0] bg_rgb_d;
 reg [0:0] tuser_d;
 reg tvalid_d;
@@ -93,8 +88,6 @@ wire fire = in_axis_tvalid && in_axis_tready;
 wire [`SVO_XYBITS-1:0] pixel_x = in_axis_tuser[0] ? 0 : hcursor;
 wire [`SVO_XYBITS-1:0] pixel_y = in_axis_tuser[0] ? 0 : vcursor;
 
-// Screen shake: apply horizontal offset to all rendering
-wire [`SVO_XYBITS-1:0] pixel_x_shaken = pixel_x + shake_x;
 
 function [9:0] obj_x;
 	input [LANE_BITS-1:0] lane;
@@ -113,7 +106,7 @@ endfunction
 // every obstacle - only the pick between them is per-obstacle.
 wire in_obs_band_short = pixel_y >= `OBS_Y      && pixel_y < `UI_TOP;
 wire in_obs_band_tall  = pixel_y >= `OBS_TALL_Y && pixel_y < `UI_TOP;
-wire [OBS_X_BITS-1:0] pixel_x_biased = pixel_x_shaken[9:0] + `OBS_X_BIAS;
+wire [OBS_X_BITS-1:0] pixel_x_biased = pixel_x[9:0] + `OBS_X_BIAS;
 
 // The tall obstacle is the SAME 16x16 sprite stretched 4x vertically instead
 // of 2x, so a second obstacle shape costs no extra ROM at all.
@@ -156,36 +149,6 @@ end
 wire [3:0] obs_src_y = obs_hit_tall ? obs_local_y_tall[5:2] : obs_local_y_short[4:1];
 
 // ---------------------------------------------------------------------------
-// Boss ridge
-//
-// A rare wide obstacle: 64 px wide, 96 px tall. Drawn as a two-tone solid
-// block (no ROM read) so it costs almost nothing in logic while staying
-// clearly distinct from the button obstacles. It uses the same biased x
-// storage as the ground obstacles.
-// ---------------------------------------------------------------------------
-wire in_obs_band_boss = pixel_y >= `BOSS_TOP && pixel_y < `UI_TOP;
-
-reg boss_hit;
-reg [6:0] boss_local_y;
-
-always @(*) begin
-	boss_hit = 0;
-	boss_local_y = 0;
-
-	if (boss_valid && in_obs_band_boss &&
-		pixel_x_biased >= boss_xpos &&
-		pixel_x_biased < boss_xpos + `BOSS_W) begin
-		boss_hit = 1;
-		boss_local_y = pixel_y[9:0] - `BOSS_TOP;
-	end
-end
-
-// Dark maroon bulk with a lighter cap on the top 6 rows so the ridge reads
-// as solid. RGB323: [7:5] R, [4:3] G, [2:0] B.
-wire [7:0] boss_rgb = (boss_local_y[6:0] >= 7'd6) ? 8'hA0   // body
-												   : 8'hF1;  // cap
-
-// ---------------------------------------------------------------------------
 // Falling objects
 //
 // This loop is unrolled by the synthesiser into MAX_OBJ parallel rectangle
@@ -221,9 +184,9 @@ always @(*) begin
 
 		// AABB hit test
 if (!obj_hit && obj_valid_bus[obj_i] &&
-			pixel_x_shaken >= scan_obj_x && pixel_x_shaken < scan_obj_x + `OBJ_W &&
+			pixel_x >= scan_obj_x && pixel_x < scan_obj_x + `OBJ_W &&
 			pixel_y >= scan_obj_ypos && pixel_y < scan_obj_ypos + `OBJ_H) begin
-		scan_local_x = pixel_x_shaken - scan_obj_x;
+		scan_local_x = pixel_x - scan_obj_x;
 			scan_local_y = pixel_y - scan_obj_ypos;
 			obj_hit = 1;
 			obj_type_now = obj_type_bus[obj_i*OBJ_TYPE_BITS +: OBJ_TYPE_BITS];
@@ -252,11 +215,11 @@ wire [7:0] obj_rgb;
 // ---------------------------------------------------------------------------
 // The fox
 // ---------------------------------------------------------------------------
-wire hit_player = pixel_x_shaken >= player_x && pixel_x_shaken < player_x + `PLAYER_W &&
+wire hit_player = pixel_x >= player_x && pixel_x < player_x + `PLAYER_W &&
 				  pixel_y >= player_y && pixel_y < player_y + `PLAYER_H;
 
 // 32x32 art shown at 64x64
-wire [9:0] player_rel_x = pixel_x_shaken[9:0] - player_x;
+wire [9:0] player_rel_x = pixel_x[9:0] - player_x;
 wire [9:0] player_rel_y = pixel_y[9:0] - player_y;
 wire [PLAYER_SRC_BITS-1:0] player_src_x = player_rel_x[5:1];
 wire [PLAYER_SRC_BITS-1:0] player_src_y = player_rel_y[5:1];
@@ -286,11 +249,10 @@ function [23:0] rgb323_to_bgr888;
 	end
 endfunction
 
-// If an obstacle, boss or object covers this pixel show it, else the background
+// If an obstacle or object covers this pixel show it, else the background
 wire [SVO_BITS_PER_PIXEL-1:0] pxl_after_obj =
 	atlas_hit_d && obj_rgb != TRANSPARENT_VAL ?
-	rgb323_to_bgr888(obj_rgb) :
-	(boss_hit_d ? rgb323_to_bgr888(boss_rgb_d) : bg_rgb_d);
+	rgb323_to_bgr888(obj_rgb) : bg_rgb_d;
 
 // The fox is drawn last, so it is always in front
 wire [SVO_BITS_PER_PIXEL-1:0] pxl_after_player =
@@ -307,8 +269,6 @@ always @(posedge clk) begin
 		atlas_hit_d <= 0;
 		hit_player_d <= 0;
 		skill_on_d <= 0;
-		boss_hit_d <= 0;
-		boss_rgb_d <= 0;
 		bg_rgb_d <= 0;
 		tuser_d <= 0;
 		tvalid_d <= 0;
@@ -318,8 +278,6 @@ always @(posedge clk) begin
 			atlas_hit_d <= atlas_hit;
 			hit_player_d <= hit_player;
 			skill_on_d <= skill_on;
-			boss_hit_d <= boss_hit;
-			boss_rgb_d <= boss_rgb;
 			bg_rgb_d <= in_axis_tdata;
 			tuser_d <= in_axis_tuser;
 		end

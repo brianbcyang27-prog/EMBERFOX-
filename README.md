@@ -41,18 +41,8 @@ top
 ```text
 hdmi_coin/
 |-- README.md
+|-- EMBERFOX.md
 |-- hdmi_coin.gprj
-|-- skills/
-|   |-- double_score.md
-|   |-- gambler.md
-|   |-- invincible_1.md
-|   |-- invincible_2.md
-|   |-- magnet.md
-|   |-- fs/
-|   |-- patches/
-|   |-- run_all_patches.ps1
-|   |-- speed_boost.md
-|   `-- star_rain.md
 |-- .vscode/
 |   |-- launch.json
 |   |-- tasks.json
@@ -69,6 +59,7 @@ hdmi_coin/
     |-- hdmi_coin.sdc
     |-- common/
     |   |-- bin2bcd.v
+    |   |-- bin2bcd7.v
     |   |-- debounce.v
     |   |-- ff_sync.v
     |   |-- fifo.v
@@ -185,7 +176,7 @@ Current game states in `game_ctrl`:
 ```
 
 Reset starts on the full-screen how-to page. JUMP proceeds: how-to →
-difficulty → skill, then a 5 → 1 countdown before the run. Play-again from the
+difficulty → skill, then a 3 → 1 countdown before the run. Play-again from the
 results screen jumps back to the difficulty menu, so the instructions never
 repeat. The state register stays inside `game_ctrl`; render layers receive
 `game_over` and the `menu_mode` / `count_val` signals for the menu screens.
@@ -209,33 +200,84 @@ button also works if one is fitted.
 - `FPS` defines how many `frame_tick` pulses make one second; `timer` decreases once every `FPS` frame ticks.
 - When `timer` reaches 0, the game enters game over.
 - `timer` and `score` are stored as binary registers and converted to packed 3-digit BCD for the UI.
-- `high_score` starts from 0 and is stored as a **binary** register; `high_score_bcd` is a converter output for display only.
+- `high_score` starts from 0 and is stored as a **binary** register; `high_score_bcd` is a converter output for display only. It is shown on the results panel only — the in-game bottom-right slot is now the HP bar.
 - `high_score` updates only when the game enters game over, comparing binary values.
 - The BCD converters read the `score` / `high_score` / `timer` registers, never live collision results. Feeding `bin2bcd` the in-flight score put a whole double-dabble ripple inside the collision path and cost 14 ns of setup slack.
 - `+time` objects add `TIME_BONUS`, currently 3 seconds.
 - `charge` objects add 1 skill charge, up to `SKILL_CHARGE_MAX`, currently 5.
 - `skill_slot` owns the common skill lifecycle: button edge detect, charge check, timer countdown, `skill_on`, and `skill_start`. It is unchanged from the coin game.
-- `SKILL_ENABLE = 1` and `SKILL_DURATION = 8`: the skill is **Ember Dash**.
+- `SKILL_ENABLE = 1` and `SKILL_DURATION = 8`. Three skills ship in the same
+  bitstream and are chosen on the second menu page — see **Skills** below.
 - `skill_start` is triggered by holding **left + right together**, since all
   three physical buttons are already spoken for.
-- While `skill_on`: falling hazards and ground obstacles both pay `OBS_BURN_BONUS`
-  (+1) instead of subtracting, gravity weakens from `GRAVITY` to `GRAVITY_DASH`
-  so jumps float, and the fire sprite is drawn.
+- `high_score` is latched during `S_OVER` from the frozen `score` register, not
+  from the live collision result on the run's last frame. Comparing `next_score`
+  put the whole `obj_ypos -> collision -> value -> clamp -> compare` chain into
+  one clock and made it the worst timing path in the design.
 
-The floor speeds up as the clock runs down, in four 24-second tiers. The ramp
-depends on the chosen difficulty: **EASY** stays at 1 px/frame with a fixed
-210-frame gap, **NORMAL** rises 1 → 2 px/frame with the gap shrinking 185 → 150,
-**HARD** rises 2 → 3 px/frame with the gap shrinking 160 → 114. Each tier
+### Health
+
+Ground ridges no longer touch the score. They are the health half of the game:
+
+```text
+loss ridge   -1 HP   (nothing, while EMBER is running)
+gain ridge   +1 HP   (clamped at hp_start)
+HP reaches 0 -> S_OVER immediately, with time still on the clock
+```
+
+Falling objects move `score`; ridges move `hp`. Nothing crosses over, which is
+what makes it obvious mid-run which mistake was just made.
+
+It also **closed timing**. `obj_ypos -> collision -> what it is worth -> score`
+was always the critical path; taking the ridge penalty adder and its 3-way
+difficulty mux out of `score_delta_eff` was the last cut needed to bring worst
+setup slack from −11.937 ns to **+0.006 ns**.
+
+`hp_empty` tests `hp <= 1`, not `hp == 0`: `hp` is written with a non-blocking
+assignment, so on the frame the run must end the decrement has not landed yet.
+The check sits *after* the clock in the same block, so if the last ridge and the
+last second arrive together the run ends the same way either way.
+
+Starting HP is a difficulty setting (5 / 4 / 3), which is what replaced the old
+per-difficulty trip penalty.
+
+### Difficulty
+
+Difficulty drives eight things, not just the floor. The full table lives in the
+`case (diff_sel)` block in `game_ctrl.v`, and the hazard mix in
+`spawn_postprocess.v`:
+
+| | EASY | NORMAL | HARD |
+|---|---|---|---|
+| Ridge speed | 2 (flat) | 2 → 3 | 3 → 4 |
+| Frames between ridges | 240 | 180 → 140 | 150 → 105 |
+| Tall ridges | no | no | yes |
+| Fall speed | 2 | 2 | 3 |
+| Frames between falling objects | 30 | 24 | 20 |
+| Starting HP | 5 | 4 | 3 |
+| Teaching window | 8 s | 5 s | 3 s |
+| Hazards after remap | ~9 %, capped at −3 | 35 %, capped at −3 | 35 %, full −3 / −5 |
+
+The floor ramps in four 24-second tiers over the 90-second run. Each tier
 tightens the gap as well as the speed — without that shrink, faster obstacles
 would be spaced further apart on screen and the game would get *easier* as it
-sped up. The falling objects are not ramped — they keep the coin game's
-constants.
+sped up. `TIMER_START` is 90 on every difficulty so one BEST score stays
+comparable.
 
-The opening of every run is a teaching window. For the first 5 seconds
-(`WARMUP_FRAMES = 300`) frost shards are remapped to plain +1 embers, and for
-the entire first tier (24 seconds) every ridge is a gain one and even HARD
-sends no tall ridges, so nothing can punish a new player before they have
-learned to read the sprites. The first ridge also spawns later than it used to.
+**Ridge speed never drops below 2, including on EASY.** Clearing a ridge is a
+race between how long it sweeps across the fox, `(OBS_W + 24) / speed`, and how
+long a jump hangs above it, ~44 frames. At 1 px/frame the sweep is 56 frames,
+so the ridge is still underneath the fox when the jump has already ended and it
+cannot be cleared at all. A slower ridge is a *harder* ridge. EASY buys its
+easiness from spacing, penalty size, hazard mix and the absence of tall ridges
+`GRAVITY` is 7 (not 9) and `PLAYER_PAD_X` is 20 (not 12) to make
+that arithmetic work.
+
+The opening of every run is a teaching window whose length is itself a
+difficulty setting. While it is open, frost shards are remapped to plain +1
+embers; on EASY and NORMAL the entire first tier (24 seconds) also sends only
+gain ridges, so nothing can punish a new player before they have learned to
+read the sprites.
 
 Object effects:
 
@@ -262,8 +304,14 @@ Score clamps to the displayable BCD range, 0 to 999.
 - Facing direction uses right-facing source art; facing left mirrors the sprite address
 - Vertical state is 8.4 fixed point (16 units = 1 pixel) so gravity can be
   gentler than 1 px/frame; `player_y` is just the top 9 bits
-- Four-frame sheet: 0/1 = walk cycle (alternates on `player_x[6]`), 2 = rising, 3 = falling
-- When `skill_on` is active, the player sprite switches to the fire skill sprite
+- `player_frame` reports 0/1 = walk cycle (alternates on `player_x[6]`),
+  2 = rising, 3 = falling. **The sheet only holds the two walk poses**, so
+  `obj_layer` addresses it with `player_frame[0]`: the air poses reuse the walk
+  art rather than reading past the end of a 2048-deep ROM. Adding real rising
+  and falling frames needs a 4096-deep ROM, and BSRAM is already 10/10
+- When `skill_on` is active, the player sprite switches to the fire skill
+  sprite. All three skills share it, so the skill countdown digits in
+  `ui_layer` are tinted per skill to tell them apart
 
 Player assets are RGB323 (8-bit) sprite sheets, pixel value `0x00` transparent:
 
@@ -304,7 +352,7 @@ compile-time constants — so the vertical half of both the collision test and t
 render test is a single comparison shared by all three, rather than one per
 obstacle.
 
-Object type probability (unchanged from the coin game):
+Raw object type probability out of `spawn_queue` (unchanged from the coin game):
 
 ```text
 +1      20%
@@ -316,9 +364,22 @@ Object type probability (unchanged from the coin game):
 charge  10%
 ```
 
-`spawn_queue` creates raw spawn data. `spawn_postprocess` now decides the height
-lane from the object type — the more an ember is worth, the higher it flies, and
-frost shards sit on the ground. That one `case` statement is the level design.
+`spawn_queue` is difficulty-blind, so 35% of everything it emits is a hazard no
+matter what the player chose — which is why EASY used to feel exactly as busy as
+HARD. `spawn_postprocess` sits between it and the object registers and rewrites
+the **type** on the way past (never the position):
+
+```text
+warmup   every hazard -> +1          the opening seconds of any run
+EASY     3 hazards in 4 -> +1, the survivor capped at -3     (~9% hazards)
+NORMAL   -5 -> -3                    (35% hazards, all mild)
+HARD     untouched                   (35% hazards, full -3 / -5)
+```
+
+The "3 in 4" roll reuses the low bits of `raw_xoff`, which are already random
+and only decide where inside a 32 px lane the sprite sits. Borrowing them costs
+no second LFSR, and the resulting correlation is a few pixels of horizontal
+offset — far below anything a player can see.
 
 Per-object state:
 
@@ -413,20 +474,40 @@ Layout:
 ```text
 left    timer, 3 digits
 center  score, 3 digits
-right   high score, 3 digits
+right   HP bar, 5 segments
 ```
 
 Current UI behavior:
 
 - a 16 px dark bar at the very top (above the background image band)
-- no English labels
+- no English labels — the three number fields are told apart by colour instead
 - left/right button indicators at screen edges
-- center score blinks during game over
+- centre score blinks during game over, and flashes **red for 8 frames**
+  whenever heat was just lost (`hurt` from `game_ctrl`)
+- the timer turns **red under ten seconds**. That test is `timer_bcd[7:4] == 0`
+  — the value is already BCD and clamped to 99, so "under ten" is just "the tens
+  digit is zero" and costs no binary compare
+- HP bar bottom-right, 5 segments, where the best score used to be: filled
+  segments green, spent ones left as dark sockets so the maximum stays visible,
+  and the whole bar turns red on the last segment
 - skill charge bar at the bottom, 5 segments
-- skill countdown timer near the charge bar, 2 small digits
+- skill countdown timer near the charge bar, 2 small digits, **tinted by
+  `skill_sel`** (orange / gold / green) — all three skills draw the same
+  burning-fox sprite, so this is the only on-screen cue for which is running
+- score multiplier digit next to the score when `score_mult > 1`
 - digits are drawn from a 6x12 pixel font ROM (`src/assets/font.mem`) scaled by pixel replication
 - timer, score, and high score receive packed BCD digits from `game_ctrl`
 - UI receives `game_over`; it does not depend on the internal state encoding
+
+`timer_low`, `hurt` and the skill tint are used **unpipelined**. Every other
+term is delayed one cycle to line up with the font ROM read, but these three
+change at most once per frame, so a one-pixel skew lands in the dark top-left
+corner and they cost no registers — which matters on a part at 100% CLS.
+
+The fields occupy disjoint rectangles: timer `x 32..116`, score `x 263..347`,
+multiplier `x 410..421`, high score `x 494..578` on rows `424..471`; the charge
+bar sits on rows `474..479` at `x 220..416` and the skill countdown at
+`x 430..456` on rows `452..475`.
 
 ### `res_overlay`
 
@@ -435,24 +516,42 @@ Receives the UI stream and overlays the result panel and the menu screens.
 Content:
 
 ```text
-TIME UP          (game over)
-SCORE 123
-BEST  456
+(results)  TIME UP           y 140
+           HEAT  123         y 196 / 208
+           BEST  456         y 252 / 264   revealed at frame 64
+           PLAY AGAIN  LEAVE y 318         revealed at frame 96
 
-(menu)   the title line shows the selected difficulty / skill word, with
-         three option boxes underneath and the chosen one lit, plus a
-         two-line button legend: SELECT LEFT OR RIGHT / JUMP TO CONFIRM
+(menu)     the selected difficulty / skill word as the title, three option
+           boxes under it with the chosen one lit, then two hint rows:
+           MOVE LEFT OR RIGHT / JUMP TO CONFIRM
 
-(how-to) FULL SCREEN (no panel box): HOW TO PLAY title plus five centred
-         lines - CATCH EMBERS FOR POINTS, JUMP THE OBSTACLES,
-         LEFT OR RIGHT TO MOVE, PRESS JUMP WHEN READY, JUMP TO START
+(how-to)   FULL SCREEN (no panel box): HOW TO PLAY plus four centred lines -
+           CATCH EMBERS FOR HEAT, JUMP OVER THE RIDGES,
+           LEFT AND RIGHT SKILL, PRESS JUMP TO START
 
-(countdown)  GET READY + a big 5 -> 1 digit, one per second
+(countdown) GET READY + a big 3 -> 1 digit, one per second
 ```
 
 All glyphs come from a shared 6x12 font ROM (`src/assets/res_font.mem`) holding
 the digits 0-9, a blank, and `A-Z`, scaled by power-of-2 pixel replication
 (title/value x4 -> 24x48, labels x2 -> 12x24, the countdown digit x8 -> 48x96).
+
+Every base X is the **computed** centred position for its own word rather than
+an eyeballed constant:
+
+```text
+scale 4:  width = 28n - 4    x = 322 - 14n
+scale 2:  width = 14n - 2    x = 321 -  7n
+```
+
+**There are exactly four `glyph_col` call sites, one per text size, and each is
+given a constant character count.** `glyph_col` is a 24-iteration loop of
+14-bit compares and a subtract, and it is combinational, so every call site
+becomes its own copy in fabric. An earlier version called it eight times and
+passed a *runtime* character count, so none of the 24 iterations could ever
+fold away at any of them. On a part that places at 100% CLS that was the single
+most expensive thing in the design. Fields shorter than the constant are safe:
+the glyph lookup returns SPACE past the end of the word and nothing is drawn.
 
 It is a combinational overlay layer with no frame counter. Define `RES_OVERLAY_DIM`
 at compile time to dim pixels outside the panel; leave it undefined for no dimming.
@@ -462,30 +561,19 @@ at compile time to dim pixels outside the panel; leave it undefined for no dimmi
 - `reset_sync`: reset synchronizer used by `top`
 - `ff_sync`: two-flop synchronizer for external asynchronous signals
 - `debounce`: counter-based debounce for synchronized active-low buttons
-- `bin2bcd`: parameterized double-dabble converter for score and timer BCD values
+- `bin2bcd` / `bin2bcd7`: parameterized double-dabble converters for the score and timer BCD values
 - `rom`: synchronous ROM wrapper with parameterized `DATA_WIDTH` (16 for RGB565 background/objects, 8 for RGB323 player sprites and packed font glyphs)
 - `fifo`: small synchronous FIFO used by `spawn_queue`
 - `lfsr32`: pseudo-random generator for object spawn logic; `spawn_queue` uses one LFSR for position and one for type
 - `game_defs.vh`: shared gameplay geometry constants used by collision and rendering paths
 
-## Skill Base
+## Skills
 
-The base branch intentionally does not implement any skill. It only exposes clean hook points so each teaching branch can apply one skill patch without changing the video pipeline.
-
-Base skill path:
-
-```text
-game_ctrl
-  -> skill_slot          // common lifecycle, disabled by default
-  -> spawn_queue
-  -> spawn_postprocess   // pass-through shell
-  -> object registers
-```
-
-`skill_slot` owns the common logic shared by every skill branch:
+All three skills ship in the bitstream and are chosen on the second menu page.
+`skill_slot` still owns the common lifecycle:
 
 ```text
-btn_skill rising edge
+btn_skill rising edge   (LEFT + RIGHT together, see Controls)
 charge full check
 skill_timer countdown
 skill_on
@@ -493,47 +581,22 @@ skill_start
 charge clear trigger
 ```
 
-`game_ctrl` exposes the common hack points:
+`game_ctrl` muxes each effect onto a signal that already existed:
 
-```text
-hit_player_l / hit_player_r / hit_player_t / hit_player_b
-score_delta
-score_delta_eff
-player_speed
-spawn_period
-spawn_postprocess
-```
+| Skill | Buff on | Effect while running (8 s) |
+|---|---|---|
+| `EMBER` | the character | **Faster and invulnerable.** Ridges cannot take HP - they still shatter, they just cost nothing - and frost shards pay `OBS_BURN_BONUS` instead of costing heat. `move_speed` 8 -> 12, `gravity_eff` 7 -> 5 |
+| `GOLD` | the falling score | `score_mult` pinned to `GOLD_MULT` (3), and frost shards pay `GOLD_SHARD` (+3). The UI multiplier digit shows 3 |
+| `LURE` | the character's reach | `hit_player_l` / `hit_player_r` grow by `LURE_PAD` (40) and `hit_player_t` loses `PLAYER_PAD_T` |
 
-The base branch uses these signals directly. Skill patches may override effective signals such as `score_delta_eff`, `player_speed_eff`, or `spawn_period_eff` inside the patch itself.
+`hit_player_b` is deliberately not widened by LURE: it is shared with the
+obstacle trip test, and LURE is a collecting skill, not a "trip on more things"
+skill.
 
-Skill specs are stored in `skills/`, one file per skill. Apply-ready patch files are stored in `skills/patches/`.
-Each patch only enables the common slot and changes the skill-specific effect.
-
-Patch usage:
-
-```powershell
-git apply --ignore-whitespace .\skills\patches\magnet.patch
-```
-
-Each patch is intended to be applied on a fresh branch from this base. The patches are not designed to be stacked together.
-
-```text
-skills/magnet.md
-skills/double_score.md
-skills/speed_boost.md
-skills/invincible_1.md
-skills/invincible_2.md
-skills/star_rain.md
-skills/gambler.md
-
-skills/patches/magnet.patch
-skills/patches/double_score.patch
-skills/patches/speed_boost.patch
-skills/patches/invincible_1.patch
-skills/patches/invincible_2.patch
-skills/patches/star_rain.patch
-skills/patches/gambler.patch
-```
+The earlier design shipped one skill per bitstream, as a `skills/` folder of
+git patches applied on throwaway branches. That folder is gone: none of its
+seven patches still applied to `game_core.v`, and the in-game menu supersedes
+the whole approach.
 
 ## Asset Format
 
@@ -684,10 +747,30 @@ Implemented:
 
 Open items:
 
-- tune spawn rate and fall speed
 - tune sprite art (the floor ridge is still button art in atlas slots 7-11)
-- add more gameplay feedback if needed
-- watch Gowin resource usage (currently LUT 4071, Register 1300, BSRAM 10/10 on GW1NSR-4C — BSRAM has no headroom left)
+- **no sound.** `buzz` (pin 19) is tied low. A square-wave engine and a
+  frame-aligned event bus used to exist, but the engine was never instantiated —
+  the bus drove two dangling wires in `game_core` and everything it computed
+  was discarded. Both were removed rather than left looking functional.
+  Re-adding it needs ~60 free LUTs that do not exist today
+- **`hdmi_coin.sdc` is incomplete.** It declares only the 27 MHz oscillator and
+  never creates the PLL/CLKDIV generated clocks, so the tool auto-creates them
+  and then checks a crossing between them that the OSER10 handles in dedicated
+  hardware. That shows up as a **−1.823 ns** path
+  `u_clkdiv/...CLKOUT.default_gen_clk -> u_pll/...CLKOUT.default_gen_clk`,
+  present in every build ever made. It is the last negative number in the
+  report and the only one left; declaring the generated clocks is the fix
+- **logic headroom is thin but no longer zero.** Latest place-and-route:
+  4387/4608 logic (96%), 1276 registers, CLS 2286/2304, BSRAM 10/10 (100%).
+  BSRAM is the hard wall — any new sprite or font glyph needs a block that does
+  not exist
+- **beware `Redeclaration of ANSI port` warnings.** Declaring a signal in the
+  ANSI port list *and* again as a bare `reg` is illegal. GowinSynthesis only
+  warns and `iverilog` accepts it silently, but the synthesiser stops treating
+  the signal as a properly driven register and logic hanging off it gets
+  optimised away — the design looks smaller than it is. Four signals were in
+  this state; correcting them added 279 LUTs and briefly put the design 237
+  over capacity. Treat that warning as an error
 
 ---
 
@@ -723,18 +806,8 @@ top
 ```text
 hdmi_coin/
 |-- README.md
+|-- EMBERFOX.md
 |-- hdmi_coin.gprj
-|-- skills/
-|   |-- double_score.md
-|   |-- gambler.md
-|   |-- invincible_1.md
-|   |-- invincible_2.md
-|   |-- magnet.md
-|   |-- fs/
-|   |-- patches/
-|   |-- run_all_patches.ps1
-|   |-- speed_boost.md
-|   `-- star_rain.md
 |-- .vscode/
 |   |-- launch.json
 |   |-- tasks.json
@@ -751,6 +824,7 @@ hdmi_coin/
     |-- hdmi_coin.sdc
     |-- common/
     |   |-- bin2bcd.v
+    |   |-- bin2bcd7.v
     |   |-- debounce.v
     |   |-- ff_sync.v
     |   |-- fifo.v
@@ -999,7 +1073,7 @@ background
 ```text
 left    timer, 3 digits
 center  score, 3 digits
-right   high score, 3 digits
+right   HP bar, 5 segments
 ```
 
 目前 UI 行為：
@@ -1041,73 +1115,27 @@ BEST  456
 - `lfsr32`：物件生成邏輯用的偽隨機產生器；`spawn_queue` 以一個 LFSR 決定位置、另一個決定類型
 - `game_defs.vh`：碰撞與繪製路徑共用的遊戲幾何常數
 
-## 技能基底（Skill Base）
+## 技能（Skills）
 
-base 分支刻意不實作任何技能，只暴露乾淨的 hook 點，讓每個教學分支都能套用單一技能 patch 而不動到影像管線。
+三個技能都包在同一份 bitstream 裡，在選單第二頁選擇。`skill_slot` 仍然負責共用
+的生命週期（按鈕邊緣、充能檢查、倒數、`skill_on`、`skill_start`），`game_ctrl`
+只是把各自的效果 mux 到既有訊號上：
 
-基底技能路徑：
+| 技能 | Buff 對象 | 發動 8 秒內的效果 |
+|---|---|---|
+| `EMBER` | 角色 | 免疫寒霜：落下的碎片與扣分障礙都改為 `+OBS_BURN_BONUS`。移動速度 8 -> 12，重力 7 -> 5 |
+| `GOLD` | 落下分數 | `score_mult` 固定為 `GOLD_MULT`（3），寒霜碎片改為 `+GOLD_SHARD`（+3）。UI 倍率數字顯示 3 |
+| `LURE` | 角色的拾取範圍 | `hit_player_l` / `hit_player_r` 各外擴 `LURE_PAD`（40），`hit_player_t` 去掉 `PLAYER_PAD_T` |
 
-```text
-game_ctrl
-  -> skill_slot          // common lifecycle, disabled by default
-  -> spawn_queue
-  -> spawn_postprocess   // pass-through shell
-  -> object registers
-```
+`hit_player_b` 刻意不受 LURE 影響：它與障礙物碰撞判定共用，LURE 是拾取技能，不
+應該讓玩家更容易撞到東西。
 
-`skill_slot` 掌管每個技能分支共用的邏輯：
+舊版設計是一個技能一份 bitstream，放在 `skills/` 資料夾以 git patch 套用。該資
+料夾已移除：七個 patch 都無法再套用到 `game_core.v`，而遊戲內選單已完全取代這個
+做法。
 
-```text
-btn_skill rising edge
-charge full check
-skill_timer countdown
-skill_on
-skill_start
-charge clear trigger
-```
-
-`game_ctrl` 暴露共用的 hack 點：
-
-```text
-hit_player_l / hit_player_r / hit_player_t / hit_player_b
-score_delta
-score_delta_eff
-player_speed
-spawn_period
-spawn_postprocess
-```
-
-base 分支直接使用這些訊號。技能 patch 可在 patch 內部覆寫如 `score_delta_eff`、`player_speed_eff` 或 `spawn_period_eff` 等有效訊號。
-
-技能規格存放於 `skills/`，一個技能一個檔案。可直接套用的 patch 檔存放於 `skills/patches/`。
-每個 patch 只會啟用共用 slot 並改變該技能特有的效果。
-
-Patch 用法：
-
-```powershell
-git apply --ignore-whitespace .\skills\patches\magnet.patch
-```
-
-每個 patch 都預期套用在從此 base 開出的全新分支上，且並非設計成彼此堆疊套用。
-
-```text
-skills/magnet.md
-skills/double_score.md
-skills/speed_boost.md
-skills/invincible_1.md
-skills/invincible_2.md
-skills/star_rain.md
-skills/gambler.md
-
-skills/patches/magnet.patch
-skills/patches/double_score.patch
-skills/patches/speed_boost.patch
-skills/patches/invincible_1.patch
-skills/patches/invincible_2.patch
-skills/patches/star_rain.patch
-skills/patches/gambler.patch
-```
-
+> 註：以下中文段落有一部分仍描述更早的接金幣版本（例如玩家固定 y、不能跳、最多
+> 16 個物件）。**以上方英文章節為準。**
 ## 資產格式（Asset Format）
 
 圖素／圖磚資產使用兩種色彩格式，皆以列優先（row-major）順序、每像素一個 token：

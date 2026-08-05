@@ -10,10 +10,12 @@ module ui_layer #(
 
 	input [11:0] timer_bcd,
 	input [11:0] score_bcd,
-	input [11:0] high_score_bcd,
 	input [2:0] skill_charge,
 	input [7:0] skill_timer,
-	input [2:0] combo_mult,
+	input [1:0] skill_sel,      // 0 = Ember, 1 = Gold, 2 = Lure
+	input [2:0] score_mult,     // combo streak, or 3 while Gold Rush runs
+	input [2:0] hp,             // health, 0..HP_MAX
+	input hurt,                 // just took damage: flash the score red
 	input game_over,
 	input btn_left,
 	input btn_right,
@@ -41,7 +43,17 @@ localparam DIGIT_GAP = 6;
 
 localparam TIMER_X = 32;        // bottom-left
 localparam SCORE_X = 263;       // bottom-center
-localparam HIGH_SCORE_X = 494;  // bottom-right
+
+// HP bar, bottom-right, in the slot the best score used to occupy. Five
+// segments of 16 with a 4 px gap span 96 px, so 494..589 - clear of the right
+// button indicator at 620. Vertically centred in the big-digit band
+// (424..471) so it reads as a peer of the timer and score, not an afterthought.
+localparam HP_X   = 494;
+localparam HP_Y   = 436;
+localparam HP_W   = 16;
+localparam HP_H   = 24;
+localparam HP_GAP = 4;
+localparam HP_SEGMENTS = 5;
 localparam CHARGE_X = 220;
 localparam CHARGE_Y = 474;
 localparam CHARGE_W = 36;
@@ -61,12 +73,26 @@ localparam FONT_H = 12;
 
 localparam [23:0] UI_BG_RGB      = 24'h181818;
 localparam [23:0] TIMER_RGB      = 24'hE8E8E8;
+localparam [23:0] TIMER_LOW_RGB  = 24'h4040FF;  // BGR888: red, last 10 seconds
 localparam [23:0] SCORE_RGB      = 24'h20E0FF;
-localparam [23:0] HIGH_SCORE_RGB = 24'hE8E8E8;
+localparam [23:0] SCORE_HURT_RGB = 24'h4040FF;  // red flash on losing heat
+// HP: filled segments are bright green, spent ones stay as dark sockets so the
+// maximum is always visible - an empty gap would just look like missing UI.
+// Down to the last segment the whole bar turns red, which is the one piece of
+// state worth shouting about.
+localparam [23:0] HP_FULL_RGB    = 24'h40E040;
+localparam [23:0] HP_LOW_RGB     = 24'h4040FF;  // BGR888: red
+localparam [23:0] HP_EMPTY_RGB   = 24'h303030;
 localparam [23:0] INDICATOR_RGB  = 24'h20FF40;
 localparam [23:0] CHARGE_RGB     = 24'hFFEA20;
-localparam [23:0] SKILL_TIME_RGB = 24'hFFEA20;
-localparam [23:0] COMBO_RGB      = 24'hFF4040;  // red for combo
+localparam [23:0] COMBO_RGB      = 24'h40E0FF;  // amber-ish, matches the charge
+
+// The skill timer takes the colour of the equipped skill. All three skills
+// draw the same burning-fox sprite, so without this there is no way to tell
+// on screen which one is running.
+localparam [23:0] SKILL_EMBER_RGB = 24'h2080FF;  // orange
+localparam [23:0] SKILL_GOLD_RGB  = 24'h20D0FF;  // gold
+localparam [23:0] SKILL_LURE_RGB  = 24'hC0FF20;  // cyan-green
 
 reg [`SVO_XYBITS-1:0] hcursor, vcursor;
 reg [4:0] blink_cnt;
@@ -84,9 +110,6 @@ wire [3:0] score_d2 = score_bcd[11:8];
 wire [3:0] score_d1 = score_bcd[7:4];
 wire [3:0] score_d0 = score_bcd[3:0];
 
-wire [3:0] high_score_d2 = high_score_bcd[11:8];
-wire [3:0] high_score_d1 = high_score_bcd[7:4];
-wire [3:0] high_score_d0 = high_score_bcd[3:0];
 
 wire skill_timer_ge_10 = skill_timer >= 10;
 wire [3:0] skill_timer_d1 = skill_timer_ge_10 ? 1 : 0;
@@ -171,6 +194,30 @@ function charge_bar_pixel;
 	end
 endfunction
 
+// HP bar. Returns {inside a segment, that segment is filled} so one pass over
+// the five rectangles serves both the "is anything drawn here" test and the
+// colour choice - two separate functions would double the compare count, and
+// there is no logic budget for that.
+function [1:0] hp_bar_pixel;
+	input [`SVO_XYBITS-1:0] x;
+	input [`SVO_XYBITS-1:0] y;
+	input [2:0] health;
+
+	integer j;
+	reg [`SVO_XYBITS-1:0] seg_x;
+	begin
+		hp_bar_pixel = 2'b00;
+
+		if (y >= HP_Y && y < HP_Y + HP_H) begin
+			for (j = 0; j < HP_SEGMENTS; j = j + 1) begin
+				seg_x = HP_X + j * (HP_W + HP_GAP);
+				if (x >= seg_x && x < seg_x + HP_W)
+					hp_bar_pixel = {1'b1, health > j};
+			end
+		end
+	end
+endfunction
+
 // Combinational: for this pixel, decide which glyph cell it lands in, its BCD
 // value, colour field, and the 6x12 source coordinate (screen coords scaled
 // down by replication: big = >>2 for 24x48, small = >>1 for 12x24).
@@ -180,7 +227,7 @@ reg [3:0]  digit;
 reg [2:0]  src_x;
 reg [3:0]  src_y;
 
-reg [7:0]  tcol, scol, hcol, kcol, ccol;
+reg [7:0]  tcol, scol, kcol, ccol;
 reg [4:0]  lx_sel;
 reg [`SVO_XYBITS-1:0] ly_big, ly_small;
 
@@ -196,7 +243,6 @@ always @(*) begin
 
 	tcol = big_col(pixel_x, TIMER_X);
 	scol = big_col(pixel_x, SCORE_X);
-	hcol = big_col(pixel_x, HIGH_SCORE_X);
 	kcol = small_col(pixel_x, SKILL_TIME_X);
 	ccol = combo_col(pixel_x, COMBO_X);
 
@@ -220,15 +266,6 @@ always @(*) begin
 			endcase
 			src_x = lx_sel[4:2];
 			src_y = ly_big[5:2];
-		end else if (hcol[7]) begin
-			glyph_hit = 1'b1; field = 3'd2; lx_sel = hcol[4:0];
-			case (hcol[6:5])
-				2'd0: digit = high_score_d2;
-				2'd1: digit = high_score_d1;
-				default: digit = high_score_d0;
-			endcase
-			src_x = lx_sel[4:2];
-			src_y = ly_big[5:2];
 		end
 	end
 
@@ -249,13 +286,13 @@ always @(*) begin
 		end
 	end
 
-	// Combo multiplier (x2, x3) - shown next to score when > 1
-	if (!glyph_hit && (combo_mult > 3'd1) &&
+	// Score multiplier (x2, x3) - shown next to score when > 1
+	if (!glyph_hit && (score_mult > 3'd1) &&
 		pixel_y >= COMBO_Y && pixel_y < COMBO_Y + SMALL_DIGIT_H) begin
 		ly_small = pixel_y - COMBO_Y;
 		if (ccol[7]) begin
 			glyph_hit = 1'b1; field = 3'd4; lx_sel = ccol[4:0];
-			digit = combo_mult;  // just show 2 or 3
+			digit = score_mult;  // just show 2 or 3
 			src_x = lx_sel[3:1];
 			src_y = ly_small[4:1];
 		end
@@ -279,7 +316,20 @@ wire [5:0] font_row;
 // Non-glyph overlay decisions (cheap rectangles), all combinational this cycle.
 wire score_on = !game_over || blink_on;
 wire in_ui = (pixel_y >= UI_TOP) || (pixel_y < UI_TOP_BAR_H);
+
+// The clock is BCD and clamped to 99, so "under ten seconds" is just "the tens
+// digit is zero" - no binary compare needed. Deliberately does NOT look at
+// timer_bcd[11:8]: bin2bcd7 only drives two digits, and game_ctrl ties the
+// hundreds nibble low rather than leaving it floating.
+wire timer_low = timer_bcd[7:4] == 4'd0;
+
+wire [23:0] skill_rgb = (skill_sel == 2'd0) ? SKILL_EMBER_RGB :
+						(skill_sel == 2'd1) ? SKILL_GOLD_RGB  : SKILL_LURE_RGB;
 wire charge_pixel = SKILL_ENABLE && charge_bar_pixel(pixel_x, pixel_y, skill_charge);
+wire [1:0] hp_px = hp_bar_pixel(pixel_x, pixel_y, hp);
+wire hp_in_bar = hp_px[1];
+wire hp_filled = hp_px[0];
+wire hp_low    = hp <= 3'd1;
 wire left_indicator = btn_left && pixel_y >= UI_TOP + 8 && pixel_y < UI_TOP + 56 &&
 						pixel_x >= 4 && pixel_x < 20;
 wire right_indicator = btn_right && pixel_y >= UI_TOP + 8 && pixel_y < UI_TOP + 56 &&
@@ -294,6 +344,7 @@ reg [0:0] tuser_d;
 reg tvalid_d;
 reg score_on_d;
 reg left_ind_d, right_ind_d, charge_d, in_ui_d;
+reg hp_in_bar_d, hp_filled_d;
 
 assign in_axis_tready  = out_axis_tready;
 assign out_axis_tvalid = tvalid_d;
@@ -301,14 +352,20 @@ assign out_axis_tuser  = tuser_d;
 
 wire glyph_on = glyph_hit_d & font_row[3'd5 - src_x_d];
 
+// timer_low / hurt / skill_rgb are used unpipelined on purpose. Every other
+// term here has to be delayed a cycle because it depends on the pixel being
+// drawn and must line up with the font ROM read; these three change at most
+// once per frame, so a one-pixel skew lands in the dark top-left corner and
+// they cost no registers - which matters, the design places at 100% CLS.
 assign out_axis_tdata =
 	left_ind_d                              ? INDICATOR_RGB :
 	right_ind_d                             ? INDICATOR_RGB :
-	(glyph_on && field_d == 3'd0)               ? TIMER_RGB :
-	(glyph_on && field_d == 3'd1 && score_on_d) ? SCORE_RGB :
-	(glyph_on && field_d == 3'd2)               ? HIGH_SCORE_RGB :
-	(glyph_on && field_d == 3'd3)               ? SKILL_TIME_RGB :
+	(glyph_on && field_d == 3'd0)               ? (timer_low ? TIMER_LOW_RGB : TIMER_RGB) :
+	(glyph_on && field_d == 3'd1 && score_on_d) ? (hurt ? SCORE_HURT_RGB : SCORE_RGB) :
+	(glyph_on && field_d == 3'd3)               ? skill_rgb :
 	(glyph_on && field_d == 3'd4)               ? COMBO_RGB :
+	hp_in_bar_d                             ? (hp_filled_d ? (hp_low ? HP_LOW_RGB : HP_FULL_RGB)
+													       : HP_EMPTY_RGB) :
 	charge_d                                ? CHARGE_RGB :
 	in_ui_d                                 ? UI_BG_RGB :
 											  bg_d;
@@ -326,6 +383,8 @@ always @(posedge clk) begin
 		right_ind_d <= 0;
 		charge_d <= 0;
 		in_ui_d <= 0;
+		hp_in_bar_d <= 0;
+		hp_filled_d <= 0;
 	end else if (out_axis_tready) begin
 		tvalid_d <= in_axis_tvalid;
 		if (fire) begin
@@ -339,6 +398,8 @@ always @(posedge clk) begin
 			right_ind_d <= right_indicator;
 			charge_d <= charge_pixel;
 			in_ui_d <= in_ui;
+			hp_in_bar_d <= hp_in_bar;
+			hp_filled_d <= hp_filled;
 		end
 	end
 end

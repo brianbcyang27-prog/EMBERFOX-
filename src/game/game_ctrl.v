@@ -13,13 +13,36 @@
 // falling ember, and up to clear an obstacle. Those two jobs pull against
 // each other, and that tension is the game.
 //
-// Scoring keeps the same 7 object types and values. The clock now runs
-// 90 seconds, the fox can triple-jump, and the floor comes at you a little
-// slower - see the difficulty ramp below.
+// Scoring keeps the same 7 object types and values. The clock runs 90 seconds
+// on every difficulty (so one BEST score stays comparable), and the fox can
+// triple-jump.
 //
-// Every run opens with a short teaching window: WARMUP_FRAMES of hazard-free
-// falling objects, and the whole first ramp tier (24 s) never sends a ridge
-// that costs points. The start shows you how to play before it punishes you.
+// Every run opens with a short teaching window: hazard-free falling objects
+// for a few seconds, and on EASY / NORMAL the whole first ramp tier (24 s)
+// never sends a ridge that costs points.
+//
+// ---------------------------------------------------------------------------
+// Can this actually be jumped?
+//
+// A ridge does not move vertically, so clearing one is a race between two
+// durations:
+//
+//     sweep   how long the ridge overlaps the fox        (OBS_W + 24) / speed
+//     hang    how long a jump holds the feet above it
+//
+// With GRAVITY = 7 and JUMP_V = 176 a full jump is airborne for 50 frames and
+// spends 44 of them above a short ridge and 37 above a tall one. So:
+//
+//     speed 1  ->  sweep 56 frames   IMPOSSIBLE, the ridge is still under the
+//                                    fox when the jump ends
+//     speed 2  ->  sweep 28 frames   clears, comfortably
+//     speed 3  ->  sweep 19 frames   clears, easily
+//
+// That is the single most important number in this file, and it is why EASY
+// does NOT use the slowest ridges. A slow ridge is a HARDER ridge: it lingers
+// under the fox for longer than any jump can last. EASY instead keeps the
+// speed at 2 and buys its easiness with a huge gap between ridges, no tall
+// ones, and a much gentler falling-object mix (see spawn_postprocess).
 //
 // Everything below runs once per video frame, on `frame_tick`.
 // ---------------------------------------------------------------------------
@@ -35,20 +58,18 @@ module game_ctrl #(
 	parameter SPAWN_PERIOD_FRAMES = 24,
 
 	// ---- ground obstacles -----------------------------------------------
+	// Speed, spacing and tall-ridge permission all come from the difficulty
+	// table further down; only the shared constants live here.
+	//
+	// Ridges no longer touch the score at all. They are the HEALTH half of the
+	// game: a loss ridge costs one HP, a gain ridge returns one. That split -
+	// falling things move the score, ground things move your health - is what
+	// makes both bars worth watching, and it takes the ridge penalty out of
+	// the score arithmetic entirely.
 	parameter MAX_OBS = 3,
 	parameter OBS_X_BITS = 11,
-	parameter OBS_SPEED_BASE = 2,     // px/frame at the start of a HARD run
-	parameter OBS_PENALTY = 2,        // heat lost for tripping on a loss obstacle
-	parameter OBS_BONUS = 1,          // heat gained for tripping on a gain obstacle
-	parameter OBS_BURN_BONUS = 1,     // heat gained instead, while Ember burns
-
-	// ---- boss obstacle --------------------------------------------------
-	// Rare wide ridge: 64px wide, 96px tall (a full jump clears it), spawns
-	// once per minute, gives BOSS_SCORE pts when cleared. Geometry (BOSS_W /
-	// BOSS_H / BOSS_TOP) lives in game_defs.vh so rendering can share it.
-	parameter BOSS_ENABLE = 1,
-	parameter BOSS_SPAWN_FRAMES = 3600,  // once per 60s at 60fps
-	parameter BOSS_SCORE = 50,
+	parameter HP_MAX = 5,             // full health, and the number of bar segments
+	parameter OBS_BURN_BONUS = 1,     // heat a frost shard pays while Ember burns
 
 	// ---- moving and jumping ---------------------------------------------
 	// Vertical numbers are 8.4 fixed point: 16 units = 1 screen pixel. Using
@@ -56,9 +77,10 @@ module game_ctrl #(
 	// difference between a floaty arc and a brick falling.
 	parameter PLAYER_START_X = 288,
 	parameter PLAYER_SPEED_START = 8,
-	parameter GRAVITY        = 9,     // 0.56 px per frame, every frame
-	parameter GRAVITY_DASH   = 7,     // gentler fall while Ember Dash is on
-	parameter JUMP_V         = 176,   // 11.0 px/frame launch -> ~114 px peak
+	parameter PLAYER_SPEED_EMBER = 12,  // Ember also makes the fox quicker
+	parameter GRAVITY        = 7,     // 0.44 px per frame, every frame
+	parameter GRAVITY_EMBER  = 5,     // gentler fall while Ember burns
+	parameter JUMP_V         = 176,   // 11.0 px/frame launch -> ~138 px peak
 	parameter AIR_JUMP_V     = 140,   // 8.75 px/frame second jump
 	parameter AIR_JUMPS_MAX  = 2,     // 2 = triple jump
 
@@ -66,10 +88,8 @@ module game_ctrl #(
 	parameter TIMER_START = 90,
 	parameter TIME_BONUS = 3,
 	parameter FPS = 60,
-	// First WARMUP_FRAMES of a run are pure teaching: falling frost shards are
-	// remapped to +1 embers (see spawn_postprocess) and every ridge is a gain
-	// one, so a new player is never punished before they can read the sprites.
-	parameter WARMUP_FRAMES = 300,   // 300 frames = 5 s at 60 fps
+	parameter GOLD_MULT = 3,          // Gold Rush multiplier on every catch
+	parameter GOLD_SHARD = 3,         // what a frost shard pays during Gold Rush
 	parameter SKILL_CHARGE_MAX = 5,
 	parameter SKILL_ENABLE = 1,
 	parameter SKILL_DURATION = 8
@@ -102,32 +122,39 @@ module game_ctrl #(
 	output [2:0] menu_mode,      // 0 = playing, 1 = game over, 2 = difficulty, 3 = skill, 4 = how-to, 5 = countdown
 	output [2:0] title_id,       // which word the result panel shows
 	output [1:0] menu_sel,       // which of the 3 options is highlighted
-	output [2:0] count_val,      // 5..1 during the pre-game countdown
+	output reg [2:0] count_val,  // 3..1 during the pre-game countdown
 
 	output reg [7:0] timer,
 	output reg [9:0] score,
 	output [11:0] timer_bcd,
 	output [11:0] score_bcd,
 	output [11:0] high_score_bcd,
-output reg [2:0] skill_charge,
-output [7:0] skill_timer,
-output skill_on,
-output game_over,
-output [2:0] combo_mult,
+	output reg [2:0] skill_charge,
+	output [7:0] skill_timer,
+	output skill_on,
+	output reg [1:0] skill_sel,  // which skill is equipped (colours the UI)
+	output game_over,
 
-// Sound event bus: sound_pulse (one clock) + event id, consumed by the
-// square-wave engine in game_core. 0 = silence. The id is *encoded*: bits
-// [4:3] = duration class, bits [2:0] = pitch class (see sound_engine.v).
-// Several events share an id on purpose - the id only needs to be non-zero.
-output reg [4:0] sound_ev,
-output reg sound_pulse,
-output shake_x,
-output boss_valid,
-output [OBS_X_BITS-1:0] boss_xpos,
+	// Health, 0..HP_MAX. Drives the bar in the bottom-right of the UI, where
+	// the best score used to be - the best score is still on the results panel,
+	// and a bar you must watch is worth more screen space mid-run than a number
+	// you cannot change.
+	output reg [2:0] hp,
 
-// Results-screen reveal: 0 = score only, 1 = best score has popped in,
-// 2 = PLAY AGAIN / LEAVE choice is up. Drives res_overlay.
-output reg [1:0] over_phase
+	// The multiplier the UI shows. Normally the combo streak (1..3); while
+	// Gold Rush is running it is pinned to GOLD_MULT, so the same digit that
+	// already existed tells the player the skill is paying out.
+	output [2:0] score_mult,
+
+	// One frame of "that hurt": drives a red flash on the score digits. This
+	// replaces a screen-shake output that was declared 1 bit wide while being
+	// assigned a 10 bit value, so every offset it produced truncated to 0 and
+	// nothing ever moved.
+	output hurt,
+
+	// Results-screen reveal: 0 = score only, 1 = best score has popped in,
+	// 2 = PLAY AGAIN / LEAVE choice is up. Drives res_overlay.
+	output reg [1:0] over_phase
 );
 // State 0 was unused in the coin game; it is now the start menu.
 localparam S_MENU_DIFF  = 0;
@@ -142,7 +169,7 @@ localparam DIFF_NORMAL = 1;
 localparam DIFF_HARD   = 2;
 
 localparam SKILL_EMBER = 0;
-localparam SKILL_TIME  = 1;
+localparam SKILL_GOLD  = 1;
 localparam SKILL_LURE  = 2;
 
 // title_id -> the word the panel shows (see res_overlay)
@@ -151,7 +178,7 @@ localparam TITLE_EASY   = 1;
 localparam TITLE_NORMAL = 2;
 localparam TITLE_HARD   = 3;
 localparam TITLE_EMBER  = 4;
-localparam TITLE_TIME   = 5;
+localparam TITLE_GOLD   = 5;
 localparam TITLE_LURE   = 6;
 
 localparam TYPE_COIN_1 = 0;
@@ -186,31 +213,24 @@ reg [MAX_OBS-1:0]      obs_gain;      // 1 = pays points, 0 = costs points
 (* ramstyle = "distributed" *) reg [2:0] obs_btn [0:MAX_OBS-1];      // 0..4 = button sprite, atlas slots 7..11
 (* ramstyle = "distributed" *) reg [OBS_X_BITS-1:0]   obs_xpos [0:MAX_OBS-1];
 
-// Boss obstacle (single instance)
-reg boss_valid;
-reg [OBS_X_BITS-1:0] boss_xpos;
-reg [11:0] boss_cnt;
-reg boss_cleared;  // set when player successfully jumps over boss
-
 reg [2:0] state;
 reg [1:0] diff_sel;
-reg [1:0] skill_sel;
 reg [7:0] frame_cnt;
 reg [7:0] spawn_cnt;
 reg [7:0] obs_cnt;
-reg [2:0] count_val;     // 5..1 while the pre-game countdown runs
 reg [7:0] count_frames;  // 0..FPS-1, one second of the countdown
-reg [11:0] warmup_cnt;   // frames since the run began; < WARMUP_FRAMES = teaching
+reg [11:0] warmup_cnt;   // frames since the run began; < warmup_frames = teaching
 reg btn_jump_q;
 reg btn_move_q;
 
-// Combo multiplier: increments on consecutive catches, resets on miss/trip
+// Combo multiplier: increments on consecutive catches, resets on trip or on
+// letting a *valuable* ember hit the floor. Missing a frost shard is correct
+// play, so it deliberately does not break the streak.
 reg [3:0] combo_cnt;      // 0..15
 reg [2:0] combo_mult;     // 1..3 (1x, 2x, 3x)
 
-// Screen shake: 2-frame camera offset when tripping
-reg [1:0] shake_cnt;      // 0..2
-reg shake_dir;            // 0 = left, 1 = right
+// "That hurt" flash: 8 frames of red score digits after losing heat.
+reg [3:0] hurt_cnt;
 
 // Results-screen reveal. over_cnt counts frames since the run ended; the
 // phase triggers are bit-tests, not compares, to keep the gate count down:
@@ -218,13 +238,13 @@ reg shake_dir;            // 0 = left, 1 = right
 // PLAY AGAIN / LEAVE choice appears. over_sel is the choice: 0 = play again
 // (default), 1 = leave to the menu.
 reg [6:0] over_cnt;
-reg [1:0] over_phase;
 reg over_sel;
 
 assign obj_valid_bus = obj_valid;
 assign obs_valid_bus = obs_valid;
 assign obs_tall_bus = obs_tall;
 assign game_over = state == S_OVER;
+assign hurt = hurt_cnt != 0;
 
 wire in_menu = (state == S_MENU_DIFF) || (state == S_MENU_SKILL) || (state == S_HOWTO);
 
@@ -245,7 +265,7 @@ assign title_id =
 	(state == S_MENU_DIFF)  ? (diff_sel == DIFF_EASY   ? TITLE_EASY  :
 							   diff_sel == DIFF_NORMAL ? TITLE_NORMAL : TITLE_HARD) :
 	(state == S_MENU_SKILL) ? (skill_sel == SKILL_EMBER ? TITLE_EMBER :
-							   skill_sel == SKILL_TIME  ? TITLE_TIME  : TITLE_LURE) :
+							   skill_sel == SKILL_GOLD  ? TITLE_GOLD  : TITLE_LURE) :
 							  TITLE_TIMEUP;
 
 // ---------------------------------------------------------------------------
@@ -283,19 +303,17 @@ wire skill_restart = game_over && frame_tick;
 wire timer_tick = frame_cnt == FPS - 1;
 wire sec_tick = game_step && timer_tick;
 
-// True while the run's opening teaching window is still open.
-wire warmup = warmup_cnt < WARMUP_FRAMES;
+// True while the run's opening teaching window is still open. The length of
+// that window is itself a difficulty setting - see the table below.
+wire warmup = warmup_cnt < warmup_frames;
 
 // ===========================================================================
-// Ember Dash (the skill)
+// The skill slot
 //
 // skill_slot is unchanged - it still owns the button edge, the charge check
-// and the countdown. Only the EFFECT is new. While skill_on is high:
-//
-//   1. frost shards and ground obstacles burn away and pay points
-//      instead of costing them
-//   2. gravity weakens, so jumps float and obstacles are easy to clear
-//   3. the fox is drawn on fire
+// and the countdown. WHICH skill runs is picked on the second menu page, and
+// each effect is muxed onto something that already existed. See "the three
+// skills" below.
 // ===========================================================================
 skill_slot #(
 	.ENABLE(SKILL_ENABLE),
@@ -314,12 +332,31 @@ skill_slot #(
 );
 
 // ===========================================================================
-// Difficulty ramp
+// Difficulty
 //
-// The falling objects behave exactly as they always did. It is the FLOOR that
-// gets meaner: obstacles arrive faster and closer together as the clock runs
-// down. `elapsed` is guarded because a +time pickup can push `timer` back
-// above its starting value.
+// This block is the whole of what EASY / NORMAL / HARD mean. Before, it set
+// only the ridge speed and spacing, so the falling half of the game - which
+// is where nearly all the score comes from - played identically on all three
+// and the menu was close to decorative. It now drives eight things:
+//
+//                        EASY        NORMAL          HARD
+//   ridge speed          2 flat      2 -> 3          3 -> 4
+//   ridge gap (frames)   240         180 -> 140      150 -> 105
+//   tall ridges          no          no              yes
+//   fall speed           2           2               3
+//   falling gap          30          24              20
+//   trip penalty         -1          -2              -3
+//   teaching window      8 s         5 s             3 s
+//
+// plus the hazard mix, which lives in spawn_postprocess because that is where
+// the object type is decided.
+//
+// Note the ridge speeds: EASY is 2, not 1. A ridge slower than 2 px/frame
+// takes longer to slide past the fox than a jump lasts, so "slow" would make
+// it unjumpable - see the header comment.
+//
+// `elapsed` is guarded because a +time pickup can push `timer` back above its
+// starting value.
 // ===========================================================================
 wire [7:0] elapsed = (timer >= TIMER_START) ? 8'd0 : (TIMER_START - timer);
 // Four 24-second tiers over the 90 second run, so the ramp never resets.
@@ -327,37 +364,55 @@ wire [1:0] speed_level = (elapsed >= 8'd72) ? 2'd3 :
                          (elapsed >= 8'd48) ? 2'd2 :
                          (elapsed >= 8'd24) ? 2'd1 : 2'd0;
 
-reg [3:0] obs_speed_raw;
+reg [3:0] obs_speed;
 reg [7:0] obs_period;
+reg [3:0] fall_speed;
+reg [7:0] fall_period;
+reg [2:0] hp_start;          // health at the start of a run
+reg [11:0] warmup_frames;
+reg        allow_tall;
 
-// The difficulty chosen on the start menu sets how fast the floor comes at you
-// and how often. HARD is the original feel minus one speed step; EASY halves
-// the ramp, slows the obstacles, spreads them out, and never sends a tall one.
 always @(*) begin
 	case (diff_sel)
 		DIFF_EASY: begin
-			// Flat: no ramp at all, and obstacles are far enough apart that
-			// there is always time to line up under a falling ember.
-			obs_speed_raw = 4'd1;
-			obs_period    = 8'd210;
+			// No ramp at all. The ridges still move at a jumpable 2 px/frame;
+			// what makes EASY easy is that they are 4 seconds apart, never
+			// tall, and you start with a full 5 HP.
+			obs_speed     = 4'd2;
+			obs_period    = 8'd240;
+			fall_speed    = 4'd2;
+			fall_period   = 8'd30;
+			hp_start      = 3'd5;      // full bar
+			warmup_frames = 12'd480;    // 8 s
+			allow_tall    = 1'b0;
 		end
 		DIFF_NORMAL: begin
-			obs_speed_raw = 4'd1 + {1'b0, speed_level[1]};   // 1,1,2,2
+			obs_speed     = 4'd2 + {3'd0, speed_level[1]};   // 2,2,3,3
 			case (speed_level)
-				2'd0:    obs_period = 8'd185;
-				2'd1:    obs_period = 8'd175;
-				2'd2:    obs_period = 8'd160;
-				default: obs_period = 8'd150;
+				2'd0:    obs_period = 8'd180;
+				2'd1:    obs_period = 8'd165;
+				2'd2:    obs_period = 8'd150;
+				default: obs_period = 8'd140;
 			endcase
+			fall_speed    = 4'd2;
+			fall_period   = 8'd24;
+			hp_start      = 3'd4;
+			warmup_frames = 12'd300;    // 5 s
+			allow_tall    = 1'b0;
 		end
 		default: begin                                       // HARD
-			obs_speed_raw = OBS_SPEED_BASE + {1'b0, speed_level[1]};  // 2,2,3,3
+			obs_speed     = 4'd3 + {3'd0, speed_level[1]};   // 3,3,4,4
 			case (speed_level)
-				2'd0:    obs_period = 8'd160;
-				2'd1:    obs_period = 8'd145;
-				2'd2:    obs_period = 8'd128;
-				default: obs_period = 8'd114;
+				2'd0:    obs_period = 8'd150;
+				2'd1:    obs_period = 8'd135;
+				2'd2:    obs_period = 8'd120;
+				default: obs_period = 8'd105;
 			endcase
+			fall_speed    = 4'd3;
+			fall_period   = 8'd20;
+			hp_start      = 3'd3;      // three mistakes and the run is over
+			warmup_frames = 12'd180;    // 3 s
+			allow_tall    = 1'b1;
 		end
 	endcase
 end
@@ -368,23 +423,32 @@ end
 // One of these is picked on the second menu page, and `skill_slot` decides
 // WHEN it is running. Each effect is a mux on something that already existed.
 //
-//   EMBER  frost burns: shards and obstacles pay +1 instead of costing points,
-//          and gravity weakens so jumps float
-//   TIME   the world crawls: obstacles and falling objects move at half speed
-//   LURE   the fox pulls embers in: the catch box reaches LURE_PAD further
-//          out on both sides (the sprite does not change size)
+// The old set was three flavours of "things move at a different speed", which
+// is why firing a skill felt like nothing was happening: the world got slower
+// or the fox floated, and the score did not change. Two of the three are now
+// real buffs, one on the fox and one on what falls.
+//
+//   EMBER  a buff on the FOX. Frost cannot hurt it: falling shards and loss
+//          ridges pay +1 instead of costing heat. It also moves half again as
+//          fast and jumps higher. For 8 seconds you can walk through anything.
+//
+//   GOLD   a buff on the FALLING SCORE. Every ember is worth GOLD_MULT times
+//          its face value - a +5 pays 15 - and frost shards stop being a
+//          hazard at all, paying GOLD_SHARD instead. The multiplier digit in
+//          the UI switches to x3 so the payout is visible, not just felt.
+//
+//   LURE   a buff on the FOX's reach. The catch box grows LURE_PAD to the left
+//          and right and loses its top padding, so embers are collected from
+//          well outside the sprite and from above the fox's head.
 // ===========================================================================
 wire skill_ember = skill_on && (skill_sel == SKILL_EMBER);
-wire skill_time  = skill_on && (skill_sel == SKILL_TIME);
+wire skill_gold  = skill_on && (skill_sel == SKILL_GOLD);
 wire skill_lure  = skill_on && (skill_sel == SKILL_LURE);
 
-// TIME halves both speeds. Nothing may reach 0 or it would park on screen
-// forever, so both results are floored at 1.
-localparam [3:0] FALL_SPEED_NORM = FALL_SPEED;
-localparam [3:0] FALL_SPEED_SLOW = (FALL_SPEED > 1) ? (FALL_SPEED >> 1) : 1;
-
-wire [3:0] obs_speed  = skill_time ? ((obs_speed_raw >> 1) | 4'd1) : obs_speed_raw;
-wire [3:0] fall_speed = skill_time ? FALL_SPEED_SLOW : FALL_SPEED_NORM;
+// The multiplier that actually multiplies. Gold pins it to GOLD_MULT rather
+// than stacking with the combo streak: stacked, a +5 during a 3x combo would
+// pay 45 and one skill use would out-score the rest of the run.
+assign score_mult = skill_gold ? GOLD_MULT[2:0] : combo_mult;
 
 // ===========================================================================
 // Falling object spawning (unchanged from the coin game)
@@ -445,6 +509,7 @@ spawn_postprocess #(
 	.resetn(resetn),
 	.fire(spawn_pop),
 	.warmup(warmup),
+	.diff(diff_sel),
 	.raw_lane(spawn_lane_raw),
 	.raw_xoff(spawn_xoff_raw),
 	.raw_type(spawn_type_raw),
@@ -467,7 +532,7 @@ reg [3:0] anim_cnt;
 wire on_ground = (player_y_fx == GROUND_FX);
 // Ember weakens gravity. Deliberately NOT halved: float too well and the fox
 // sails over the falling embers instead of catching them.
-wire [4:0] gravity_eff = skill_ember ? GRAVITY_DASH : GRAVITY;
+wire [4:0] gravity_eff = skill_ember ? GRAVITY_EMBER : GRAVITY;
 
 reg signed [11:0] vy_next;
 reg signed [14:0] y_raw;
@@ -519,8 +584,10 @@ assign player_y = {1'b0, player_y_fx[12:4]};   // drop the fractional bits
 assign player_frame = !on_ground ? (player_vy[11] ? 2'd2 : 2'd3)
 								 : {1'b0, player_x[6]};
 
-wire can_left = player_x > PLAYER_SPEED_START;
-wire can_right = player_x + PLAYER_SPEED_START < PLAYER_MAX_X;
+// Ember also speeds the fox up - the "buff on the character" half of it.
+wire [4:0] move_speed = skill_ember ? PLAYER_SPEED_EMBER[4:0] : PLAYER_SPEED_START[4:0];
+wire can_left = player_x > {5'd0, move_speed};
+wire can_right = player_x + {5'd0, move_speed} < PLAYER_MAX_X;
 
 // ===========================================================================
 // Collision 1: catching a falling object
@@ -535,13 +602,19 @@ wire can_right = player_x + PLAYER_SPEED_START < PLAYER_MAX_X;
 // the path for free, and the values are identical when the next frame reads
 // them.
 //
-// Lure widens the catch box without changing the drawn sprite. The left edge
-// is clamped so it cannot wrap when the fox is against the left wall.
+// Lure widens the catch box without changing the drawn sprite, and also drops
+// the top padding so embers can be taken from above the fox's head. The left
+// edge is clamped so it cannot wrap when the fox is against the left wall.
+//
+// hit_player_b is NOT widened: it is shared with the obstacle test below, and
+// Lure is a collecting skill, not a "trip on more things" skill.
 // ---------------------------------------------------------------------------
 wire [10:0] lure_l_raw = (skill_lure && player_x > `LURE_PAD) ? (player_x - `LURE_PAD)
 						 : (skill_lure ? 11'd0 : {1'b0, player_x});
 wire [10:0] lure_r_raw = skill_lure ? (player_x + `PLAYER_W + `LURE_PAD)
 									: (player_x + `PLAYER_W);
+wire [10:0] lure_t_raw = skill_lure ? {1'b0, player_y}
+									: (player_y + `PLAYER_PAD_T);
 
 reg [10:0] hit_player_l;
 reg [10:0] hit_player_r;
@@ -557,7 +630,7 @@ always @(posedge clk) begin
 	end else begin
 		hit_player_l <= lure_l_raw;
 		hit_player_r <= lure_r_raw;
-		hit_player_t <= player_y + `PLAYER_PAD_T;
+		hit_player_t <= lure_t_raw;
 		hit_player_b <= player_y + `PLAYER_H;
 	end
 end
@@ -619,7 +692,6 @@ end
 // per-obstacle.
 wire feet_below_short = hit_player_b > `OBS_Y;
 wire feet_below_tall  = hit_player_b > `OBS_TALL_Y;
-wire feet_below_boss  = hit_player_b > `BOSS_TOP;
 
 integer obs_i;
 reg obs_hit_valid;
@@ -645,26 +717,6 @@ always @(*) begin
 	end
 end
 
-// ---- boss obstacle collision ----
-reg boss_hit_valid;
-reg [10:0] trip_boss_x;
-
-always @(*) begin
-	boss_hit_valid = 0;
-	trip_boss_x = 0;
-
-	if (boss_valid) begin
-		// un-bias into screen space
-		trip_boss_x = boss_xpos - `OBS_X_BIAS;
-
-		if (feet_below_boss &&  // the boss top (320) sits above OBS_TALL_Y (352)
-			trip_l < trip_boss_x + `BOSS_W &&
-			trip_r > trip_boss_x) begin
-			boss_hit_valid = 1;
-		end
-	end
-end
-
 // ===========================================================================
 // What a collision does to the score
 //
@@ -678,7 +730,8 @@ reg signed [7:0] score_delta;
 reg signed [7:0] score_delta_eff;
 reg signed [11:0] score_sum;
 
-wire any_hit = hit_valid || obs_hit_valid || boss_hit_valid;
+// Everything that can move the score this frame.
+wire any_hit = hit_valid || obs_hit_valid;
 reg [9:0] high_score;
 
 wire hit_is_hazard = (obj_type[hit_idx] == TYPE_MINUS3) ||
@@ -700,7 +753,12 @@ always @(*) begin
 			TYPE_COIN_5: score_delta = 5;
 			TYPE_MINUS3: score_delta = -3;
 			TYPE_MINUS5: score_delta = -5;
-			TYPE_TIME: next_timer = timer + TIME_BONUS;
+			// Clamped at 99: the display is two digits (bin2bcd7), and the
+			// converter only sees timer[6:0], so an unclamped clock would
+			// read 100 as "00" and then count down from a wrapped value.
+			// Four sunstones from a 90 second start is enough to hit it.
+			TYPE_TIME: next_timer = (timer >= 8'd99 - TIME_BONUS) ? 8'd99
+																  : timer + TIME_BONUS;
 			TYPE_CHARGE:
 				if (skill_charge < SKILL_CHARGE_MAX)
 					next_charge = skill_charge + 1;
@@ -710,39 +768,24 @@ always @(*) begin
 			end
 		endcase
 
-		// EMBER: a burning fox destroys frost instead of being hurt by it
-		if (skill_ember && hit_is_hazard)
+		// Frost is only a hazard if nothing is protecting the fox. EMBER burns
+		// it for a token +1; GOLD transmutes it into real heat.
+		if (hit_is_hazard && skill_gold)
+			score_delta_eff = GOLD_SHARD;
+		else if (hit_is_hazard && skill_ember)
 			score_delta_eff = OBS_BURN_BONUS;
 		else
 			score_delta_eff = score_delta;
 
-		// Combo multiplier: only for positive catches
-		if (score_delta > 0) begin
-			score_delta_eff = score_delta_eff * combo_mult;
-		end
+		// The multiplier applies to gains only, so a shard never gets worse.
+		if (score_delta > 0)
+			score_delta_eff = score_delta_eff * score_mult;
 	end
 
-	// --- tripped on a ground obstacle ---
-	if (obs_hit_valid) begin
-		if (obs_gain[obs_hit_idx])
-			score_delta_eff = score_delta_eff + OBS_BONUS;
-		else if (skill_ember)
-			score_delta_eff = score_delta_eff + OBS_BURN_BONUS;
-		else
-			score_delta_eff = score_delta_eff - OBS_PENALTY;
-	end
-
-	// --- boss obstacle ---
-	if (boss_hit_valid) begin
-		if (skill_ember)
-			score_delta_eff = score_delta_eff + OBS_BURN_BONUS;
-		else
-			score_delta_eff = score_delta_eff - OBS_PENALTY;
-	end
-
-	// --- boss cleared (jumped over) ---
-	// When boss goes off-screen, award points if player didn't trip on it
-	// This is handled in the sequential block when boss_xpos <= OBS_KILL_X
+	// Ridges are deliberately absent here. They move HP, not heat - see
+	// ridge_hurt / ridge_heal below. Keeping them out of this block also keeps
+	// two adders and a 3-way penalty mux off the score path, which is the
+	// slowest path in the design.
 
 	score_sum = $signed({2'b00, score}) + score_delta_eff;
 	if (score_sum < 0)
@@ -753,11 +796,44 @@ always @(*) begin
 		next_score = score_sum[9:0];
 end
 
-wire game_ending = sec_tick && next_timer <= 1;
+// ===========================================================================
+// Health
+//
+// Ground ridges are the only thing that moves HP, and the fox has exactly
+// hp_start of them to spare. EMBER makes it immune: while the skill runs a
+// loss ridge still shatters, it simply costs nothing.
+//
+// hp_empty has to look at hp == 1 rather than hp == 0, because `hp` is updated
+// with a non-blocking assignment - the decrement that empties the bar has not
+// landed yet on the frame the run needs to end.
+// ===========================================================================
+// EVERY ridge costs a point of health. There is no such thing as a friendly
+// one: nothing on the floor gives HP back, so the bar only ever falls and the
+// only way to keep it is to jump. The `obs_gain` flag that used to make some
+// ridges heal is gone entirely, along with the sprite variants that advertised
+// them - see the obs_btn note at the spawn site.
+wire ridge_hurt = obs_hit_valid && !skill_ember;
+wire hp_empty   = ridge_hurt && (hp <= 3'd1);
+
+// Anything that hurt this frame, for the UI flash: a ridge taking health, or
+// frost taking heat.
+wire took_damage = ridge_hurt ||
+				   (hit_valid && hit_is_hazard && !skill_ember && !skill_gold);
+
 // Compare in BINARY, not BCD. Going through the converter first would drag a
 // whole double-dabble chain into the collision path (see below).
-wire new_high_score = next_score > high_score;
-wire high_score_will_update = game_ending && new_high_score;
+//
+// It compares two REGISTERS. The earlier version compared `next_score` - this
+// instant's collision result - which put the entire chain
+//
+//     obj_ypos -> collision -> which object -> what it is worth
+//              -> clamp -> compare -> high_score
+//
+// into one clock and made it the worst path in the whole design. Latching the
+// best score during S_OVER instead is a plain register-to-register compare;
+// `score` is frozen the moment the run ends, so writing it on every results
+// frame is idempotent and needs no edge detect.
+wire new_high_score = score > high_score;
 
 // ---------------------------------------------------------------------------
 // The BCD converters read REGISTERS, never live collision results.
@@ -791,12 +867,20 @@ bin2bcd #(
 	.bcd(high_score_bcd)
 );
 
+// bin2bcd7 produces TWO digits. The hundreds nibble has to be driven
+// explicitly: leaving it open made GowinSynthesis report
+// "output port timer_bcd[11:8] has no driver, assigning undriven bits to Z",
+// and ui_layer reads exactly those bits - both as the timer's leading digit
+// and as the "under ten seconds" test. The clock is clamped to 99 below, so
+// the hundreds digit is always zero.
 bin2bcd7 #(
 	.BIN_BITS(7)
 ) u_timer_bcd (
 	.bin(timer[6:0]),
 	.bcd(timer_bcd[7:0])
 );
+
+assign timer_bcd[11:8] = 4'd0;
 
 // ===========================================================================
 // Pack everything into flat buses for the render layer
@@ -852,7 +936,7 @@ always @(posedge clk) begin
 		frame_cnt <= 0;
 		anim_cnt <= 0;
 		spawn_cnt <= SPAWN_PERIOD_FRAMES;
-		obs_cnt <= 8'd150;
+		obs_cnt <= 8'd180;
 		count_val <= 3;
 		count_frames <= 0;
 		warmup_cnt <= 0;
@@ -861,6 +945,13 @@ always @(posedge clk) begin
 		over_cnt <= 0;
 		over_phase <= 0;
 		over_sel <= 0;
+		// These used to be initialised only when a run started. On the board
+		// that happened to work because the fabric powers registers up at 0,
+		// but a combo_mult of 0 would have multiplied every catch by zero.
+		combo_cnt <= 0;
+		combo_mult <= 3'd1;
+		hurt_cnt <= 0;
+		hp <= HP_MAX[2:0];
 
 		for (i = 0; i < MAX_OBJ; i = i + 1) begin
 			obj_lane[i] <= 0;
@@ -922,18 +1013,18 @@ always @(posedge clk) begin
 				if (warmup)
 					warmup_cnt <= warmup_cnt + 1'b1;
 
-				// ---- move sideways (unchanged from the coin game) ----
+				// ---- move sideways ----
 				// Holding both cancels out, which is what frees LEFT+RIGHT to
 				// mean "use the skill".
 				if (btn_left && !btn_right) begin
 					if (can_left)
-						player_x <= player_x - PLAYER_SPEED_START;
+						player_x <= player_x - {5'd0, move_speed};
 					else
 						player_x <= 0;
 					player_dir <= 0;
 				end else if (btn_right && !btn_left) begin
 					if (can_right)
-						player_x <= player_x + PLAYER_SPEED_START;
+						player_x <= player_x + {5'd0, move_speed};
 					else
 						player_x <= PLAYER_MAX_X;
 					player_dir <= 1;
@@ -952,8 +1043,12 @@ always @(posedge clk) begin
 				end
 
 				// ---- combo update: increment on catch, reset on miss/trip ----
+				//
+				// The break condition deliberately ignores frost. Letting a
+				// shard fall past is the RIGHT play, and the old version reset
+				// the streak for it, so a careful player was punished for
+				// dodging and the multiplier could almost never be held.
 				if (hit_valid) begin
-					// Caught a positive object - increment combo
 					if (score_delta > 0) begin
 						if (combo_cnt < 4'd15)
 							combo_cnt <= combo_cnt + 1'b1;
@@ -961,20 +1056,34 @@ always @(posedge clk) begin
 							combo_mult <= combo_mult + 1'b1;
 						else if (combo_cnt >= 4'd5 && combo_mult < 3'd2)
 							combo_mult <= combo_mult + 1'b1;
-					end else begin
-						// Caught a negative object - reset combo
+					end else if (hit_is_hazard && !skill_ember && !skill_gold) begin
+						// Walked into frost with nothing protecting you.
 						combo_cnt <= 0;
 						combo_mult <= 3'd1;
 					end
-				end else if (obs_hit_valid || boss_hit_valid) begin
-					// Tripped on a ridge or the boss - reset combo
-					combo_cnt <= 0;
-					combo_mult <= 3'd1;
 				end
 
-				// Also reset combo when an object hits the floor (missed)
+				// Tripping on a loss ridge also breaks the streak.
+				if (took_damage) begin
+					combo_cnt <= 0;
+					combo_mult <= 3'd1;
+					hurt_cnt <= 4'd8;
+				end else if (hurt_cnt != 0) begin
+					hurt_cnt <= hurt_cnt - 1'b1;
+				end
+
+				// ---- health ----
+				// Ridges are the only thing that touches HP, and they only
+				// ever take it. Clamped at 0 so the bar cannot wrap round to
+				// full on the frame the run ends.
+				if (ridge_hurt && hp != 0)
+					hp <= hp - 1'b1;
+
+				// Dropping a real ember breaks it too. Only types 0..2 count -
+				// a missed sunstone or crystal is a shame, not a mistake.
 				for (i = 0; i < MAX_OBJ; i = i + 1) begin
-					if (obj_valid[i] && obj_ypos[i] >= OBJ_GROUND_Y) begin
+					if (obj_valid[i] && obj_ypos[i] >= OBJ_GROUND_Y &&
+						obj_type[i] <= TYPE_COIN_5) begin
 						combo_cnt <= 0;
 						combo_mult <= 3'd1;
 					end
@@ -1021,49 +1130,22 @@ always @(posedge clk) begin
 					// The bits come from the head of the spawn FIFO, which is
 					// already random and already changing - no second LFSR.
 					//
-					// Tier 0 (the first 24 s) is the teaching tier: every
-					// ridge is a gain one and even HARD sends no tall ones, so
-					// the player learns to jump before anything can hurt them.
-					obs_tall[obs_free_idx] <= (diff_sel == DIFF_HARD) && (speed_level != 0) && spawn_data[10];
-					obs_gain[obs_free_idx] <= (speed_level == 0) ? 1'b1 : spawn_data[9];
-					// Gain obstacles show the fox (0) or orb (1); loss ones
-					// show the blue (2) or one of the red (3/4) buttons.
-					obs_btn[obs_free_idx] <= spawn_data[9] ? {2'd0, spawn_data[8]}
-														   : (spawn_data[7:6] == 2'd3 ? 3'd2
-																					 : {1'd0, spawn_data[7:6]} + 3'd2);
+					// Tier 0 (the first 24 s) still holds the tall ridges back
+					// on EASY and NORMAL, so the player meets the hoppable kind
+					// first. HARD skips that grace period.
+					obs_tall[obs_free_idx] <= allow_tall && (speed_level != 0) && spawn_data[10];
+					// Every ridge hurts, so every ridge has to LOOK like it
+					// hurts. Only the hazard sprites are used now - the blue
+					// button (2) and the two reds (3/4). Showing the fox or orb
+					// button on something that costs a life would be teaching
+					// the player the wrong thing.
+					obs_btn[obs_free_idx] <= (spawn_data[7:6] == 2'd3) ? 3'd2
+											 : {1'd0, spawn_data[7:6]} + 3'd2;
 				end
-
-				// ---- boss obstacle ----
-				// The countdown only ticks while no boss is on screen, so a
-				// spawn lands ~60s after the previous boss left the screen.
-				if (BOSS_ENABLE) begin
-					if (boss_valid) begin
-						if (boss_xpos <= `OBS_KILL_X) begin
-							boss_valid <= 1'b0;
-							boss_cnt <= BOSS_SPAWN_FRAMES;   // start the long gap
-							// Award boss bonus if player cleared it (jumped over without tripping)
-							if (boss_cleared)
-								score <= score + BOSS_SCORE;
-							boss_cleared <= 1'b0;
-						end else
-							boss_xpos <= boss_xpos - {7'd0, obs_speed};
-					end else if (boss_cnt != 0) begin
-						boss_cnt <= boss_cnt - 1'b1;
-					end else begin
-						// countdown finished and no boss present: spawn one
-						boss_valid <= 1'b1;
-						boss_xpos <= `OBS_SPAWN_X;
-						boss_cleared <= 1'b0;
-					end
-				end
-
-				// Track if player cleared boss: feet fully above its top while rising
-				if (boss_valid && player_vy < 0 && hit_player_b < `BOSS_TOP)
-					boss_cleared <= 1'b1;
 
 				// ---- spawn countdowns ----
 				if (spawn_pop)
-					spawn_cnt <= SPAWN_PERIOD_FRAMES - 1;
+					spawn_cnt <= fall_period - 1'b1;
 				else if (spawn_cnt != 0)
 					spawn_cnt <= spawn_cnt - 1'b1;
 
@@ -1082,25 +1164,26 @@ always @(posedge clk) begin
 						timer <= 0;
 						state <= S_OVER;
 						// Start the reveal from scratch: score first, then the
-						// best score, then the choice.
+						// best score, then the choice. The best score itself is
+						// latched in S_OVER below, off the collision path.
 						over_cnt <= 0;
 						over_phase <= 0;
 						over_sel <= 0;
-						if (high_score_will_update) begin
-							high_score <= next_score;
-						end
 					end
 				end else begin
 					frame_cnt <= frame_cnt + 1'b1;
-					if (shake_cnt != 0)
-						shake_cnt <= shake_cnt - 1'b1;
 				end
 
-				// Screen shake on tripping a loss ridge (or the boss). Placed
-				// AFTER the decrement so the kick (2 frames) wins this frame.
-				if ((obs_hit_valid && !obs_gain[obs_hit_idx]) || boss_hit_valid) begin
-					shake_cnt <= 2'd2;
-					shake_dir <= ~shake_dir;
+				// ---- out of health ----
+				// Placed after the clock so that if the last ridge and the last
+				// second land together, this wins and the run ends the same way
+				// either way. The results screen is reached identically, so
+				// nothing downstream has to know which one finished the run.
+				if (hp_empty) begin
+					state <= S_OVER;
+					over_cnt <= 0;
+					over_phase <= 0;
+					over_sel <= 0;
 				end
 			end else if (state == S_COUNT) begin
 				// ---- pre-game countdown: 3,2,1 then play; JUMP skips ----
@@ -1125,16 +1208,13 @@ always @(posedge clk) begin
 						skill_charge <= 0;
 						combo_cnt <= 0;
 						combo_mult <= 3'd1;
-						shake_cnt <= 0;
-						boss_valid <= 0;
-						boss_xpos <= 0;
-						boss_cnt <= 0;
-						boss_cleared <= 0;
+						hurt_cnt <= 0;
+						hp <= hp_start;
 						state <= S_PLAY;
 						frame_cnt <= 0;
 						anim_cnt <= 0;
 						spawn_cnt <= SPAWN_PERIOD_FRAMES;
-						obs_cnt <= 8'd150;
+						obs_cnt <= 8'd180;
 						warmup_cnt <= 0;
 					end else if (count_frames == FPS - 1) begin
 						count_frames <= 0;
@@ -1150,8 +1230,15 @@ always @(posedge clk) begin
 				// and the PLAY AGAIN / LEAVE choice appears when over_cnt[5]
 				// goes high too (frame 96). The choice stays up for as long
 				// as the player sits on the screen.
+				//
+				// The best score is latched here, from the frozen `score`
+				// register, rather than from the live collision result on the
+				// last frame of the run - see new_high_score above.
 				// -----------------------------------------------------------
 				if (frame_tick) begin
+					if (new_high_score)
+						high_score <= score;
+
 					if (over_phase == 2 && btn_jump_rise) begin
 						// ---- confirm the choice ----
 						// PLAY AGAIN goes into the countdown (which clears the
@@ -1191,107 +1278,16 @@ always @(posedge clk) begin
 	end
 end
 
-// ===========================================================================
-// Sound event bus
+// ---------------------------------------------------------------------------
+// There is no sound. `buzz` (pin 19) is tied low in game_core.
 //
-// One frame-aligned bus: sound_pulse (one clock wide) + sound_ev id. The ids
-// must match sound_engine.v. Priority, high to low: end of run / new high
-// score, skill start, skill end, ridge trip, ember catch, jump, time warning,
-// countdown / GO, menu confirm, menu move.
-//
-// skill_start from skill_slot is a raw pixel-clock pulse (not frame-aligned),
-// so it is sampled on every clock; everything else is frame-aligned and is
-// sampled once at the frame tick.
-// ===========================================================================
-localparam EV_MENU     = 5'd1;
-localparam EV_CONFIRM  = 5'd2;
-localparam EV_COUNT    = 5'd3;
-localparam EV_GO       = 5'd24;
-localparam EV_JUMP     = 5'd6;
-localparam EV_JUMP2    = 5'd5;
-localparam EV_JUMP3    = 5'd4;
-localparam EV_C1       = 5'd5;
-localparam EV_C3       = 5'd17;
-localparam EV_C5       = 5'd25;
-localparam EV_CRYSTAL  = 5'd4;
-localparam EV_SUNSTONE = 5'd16;
-localparam EV_SHARD    = 5'd7;
-localparam EV_TRIP     = 5'd8;
-localparam EV_SKILL    = 5'd24;
-localparam EV_SKILL_E  = 5'd26;
-localparam EV_WARN     = 5'd18;
-localparam EV_OVER     = 5'd28;
-localparam EV_HIGH     = 5'd25;
+// A frame-aligned sound event bus and a square-wave engine used to live here
+// and in src/common/sound_engine.v, but the engine was never instantiated:
+// the bus drove two dangling wires in game_core and every note it computed
+// was discarded by the synthesiser. Both are gone rather than left looking
+// functional. Bringing sound back needs ~60 free LUTs and the design places
+// at 100% CLS today, so it is real work, not a re-connect.
+// ---------------------------------------------------------------------------
 
-reg skill_on_q;
-
-always @(posedge clk) begin
-	if (!resetn) begin
-		sound_pulse <= 0;
-		sound_ev <= 0;
-		skill_on_q <= 0;
-	end else begin
-		skill_on_q <= skill_on;
-
-		// raw edge first: skill_start is one pixel-clock wide and can land
-		// between frames, so it must be seen on every clock.
-		if (skill_start) begin
-			sound_pulse <= 1'b1;
-			sound_ev <= EV_SKILL;
-		end else if (skill_on_q && !skill_on) begin
-			sound_pulse <= 1'b1;
-			sound_ev <= EV_SKILL_E;
-		end else if (frame_tick) begin
-
-			if (game_ending) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= high_score_will_update ? EV_HIGH : EV_OVER;
-			end else if (game_step && obs_hit_valid) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= obs_gain[obs_hit_idx] ? EV_C1 : EV_TRIP;
-			end else if (game_step && boss_hit_valid) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= EV_TRIP;
-			end else if (game_step && hit_valid) begin
-				sound_pulse <= 1'b1;
-				case (obj_type[hit_idx])
-					TYPE_COIN_1:  sound_ev <= EV_C1;
-					TYPE_COIN_3:  sound_ev <= EV_C3;
-					TYPE_COIN_5:  sound_ev <= EV_C5;
-					TYPE_CHARGE:  sound_ev <= EV_CRYSTAL;
-					TYPE_TIME:    sound_ev <= EV_SUNSTONE;
-					default:      sound_ev <= EV_SHARD;
-				endcase
-			end else if (game_step && btn_jump_rise) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= on_ground          ? EV_JUMP  :
-							(air_jumps == 2'd2) ? EV_JUMP2 : EV_JUMP3;
-			end else if (timer_tick && next_timer > 1 && next_timer <= 11) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= EV_WARN;
-			end else if (state == S_COUNT && count_frames == FPS - 1) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= (count_val == 1) ? EV_GO : EV_COUNT;
-			end else if (state == S_OVER && over_phase == 2 && btn_jump_rise) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= EV_CONFIRM;
-			end else if (in_menu && btn_jump_rise) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= EV_CONFIRM;
-			end else if (in_menu && menu_move_rise) begin
-				sound_pulse <= 1'b1;
-				sound_ev <= EV_MENU;
-			end else begin
-				sound_pulse <= 0;
-			end
-		end else begin
-			sound_pulse <= 0;
-		end
-	end
-end
-
-// Screen shake: 2-frame horizontal offset when tripping
-assign shake_x = (shake_cnt == 2'd2) ? (shake_dir ? 10'd4 : -10'sd4) :
-				 (shake_cnt == 2'd1) ? (shake_dir ? 10'd2 : -10'sd2) : 10'd0;
 
 endmodule
