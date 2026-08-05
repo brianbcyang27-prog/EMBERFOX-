@@ -17,9 +17,9 @@
 // on every difficulty (so one BEST score stays comparable), and the fox can
 // triple-jump.
 //
-// Every run opens with a short teaching window: hazard-free falling objects
-// for a few seconds, and on EASY / NORMAL the whole first ramp tier (24 s)
-// never sends a ridge that costs points.
+// Every run opens with a short teaching window of hazard-free FALLING objects.
+// The floor gets no such grace: every ridge costs health from the first one
+// onwards, so the only defence is to jump.
 //
 // ---------------------------------------------------------------------------
 // Can this actually be jumped?
@@ -62,10 +62,10 @@ module game_ctrl #(
 	// table further down; only the shared constants live here.
 	//
 	// Ridges no longer touch the score at all. They are the HEALTH half of the
-	// game: a loss ridge costs one HP, a gain ridge returns one. That split -
-	// falling things move the score, ground things move your health - is what
-	// makes both bars worth watching, and it takes the ridge penalty out of
-	// the score arithmetic entirely.
+	// game: EVERY ridge costs one HP and none of them ever give it back. That
+	// split - falling things move the score, ground things only take health -
+	// is what makes both bars worth watching, and it takes the ridge penalty
+	// out of the score arithmetic entirely.
 	parameter MAX_OBS = 3,
 	parameter OBS_X_BITS = 11,
 	parameter HP_MAX = 5,             // full health, and the number of bar segments
@@ -782,7 +782,7 @@ always @(*) begin
 	end
 
 	// Ridges are deliberately absent here. They move HP, not heat - see
-	// ridge_hurt / ridge_heal below. Keeping them out of this block also keeps
+	// ridge_hurt below. Keeping them out of this block also keeps
 	// two adders and a 3-way penalty mux off the score path, which is the
 	// slowest path in the design.
 
@@ -798,9 +798,9 @@ end
 // ===========================================================================
 // Health
 //
-// Ground ridges are the only thing that moves HP, and the fox has exactly
-// hp_start of them to spare. EMBER makes it immune: while the skill runs a
-// loss ridge still shatters, it simply costs nothing.
+// Ground ridges are the only thing that moves HP, they only ever take it, and
+// the fox has exactly hp_start of them to spare. EMBER makes it immune: while
+// the skill runs a ridge still shatters, it simply costs nothing.
 //
 // hp_empty has to look at hp == 1 rather than hp == 0, because `hp` is updated
 // with a non-blocking assignment - the decrement that empties the bar has not
@@ -1061,7 +1061,7 @@ always @(posedge clk) begin
 					end
 				end
 
-				// Tripping on a loss ridge also breaks the streak.
+				// Tripping on a ridge also breaks the streak.
 				if (took_damage) begin
 					combo_cnt <= 0;
 					combo_mult <= 3'd1;
